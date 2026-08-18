@@ -18,6 +18,11 @@ export interface DeckForgeAPI {
   sound: {
     selectFile: () => Promise<string | null>;
   };
+  settings: {
+    getAll: () => Promise<{ success: boolean; settings: any }>;
+    update: (section: string, values: any) => Promise<{ success: boolean }>;
+    migrate: (data: string) => Promise<{ success: boolean }>;
+  };
   devices: {
     listAvailable: () => Promise<{ success: boolean; ports: any[]; error?: string }>;
     listConnected: () => Promise<{ success: boolean; devices: any[] }>;
@@ -27,13 +32,7 @@ export interface DeckForgeAPI {
     onStatus: (callback: (status: { connected: boolean; deviceId: string }) => void) => () => void;
   };
   discord: {
-    connect: (options?: { clientId?: string; clientSecret?: string }) => Promise<{ success: boolean; state?: { mute: boolean; deaf: boolean }; error?: string }>;
-    disconnect: () => Promise<{ success: boolean }>;
     getState: () => Promise<{ connected: boolean; mute: boolean; deaf: boolean }>;
-    toggleMute: () => Promise<{ success: boolean; state?: { mute: boolean; deaf: boolean }; error?: string }>;
-    toggleDeaf: () => Promise<{ success: boolean; state?: { mute: boolean; deaf: boolean }; error?: string }>;
-    setMute: (mute: boolean) => Promise<{ success: boolean; state?: { mute: boolean; deaf: boolean }; error?: string }>;
-    setDeaf: (deaf: boolean) => Promise<{ success: boolean; state?: { mute: boolean; deaf: boolean }; error?: string }>;
     onVoiceState: (callback: (state: { mute: boolean; deaf: boolean }) => void) => () => void;
     onStatus: (callback: (status: { connected: boolean }) => void) => () => void;
   };
@@ -73,6 +72,11 @@ const api: DeckForgeAPI = {
   sound: {
     selectFile: () => ipcRenderer.invoke('sound:getFilePath'),
   },
+  settings: {
+    getAll: () => ipcRenderer.invoke('settings:getAll'),
+    update: (section, values) => ipcRenderer.invoke('settings:update', section, values),
+    migrate: (data) => ipcRenderer.invoke('settings:migrate', data),
+  },
   devices: {
     listAvailable: () => ipcRenderer.invoke('devices:listAvailable'),
     listConnected: () => ipcRenderer.invoke('devices:listConnected'),
@@ -90,13 +94,7 @@ const api: DeckForgeAPI = {
     },
   },
   discord: {
-    connect: (options?) => ipcRenderer.invoke('discord:connect', options),
-    disconnect: () => ipcRenderer.invoke('discord:disconnect'),
     getState: () => ipcRenderer.invoke('discord:getState'),
-    toggleMute: () => ipcRenderer.invoke('discord:toggleMute'),
-    toggleDeaf: () => ipcRenderer.invoke('discord:toggleDeaf'),
-    setMute: (mute) => ipcRenderer.invoke('discord:setMute', mute),
-    setDeaf: (deaf) => ipcRenderer.invoke('discord:setDeaf', deaf),
     onVoiceState: (callback) => {
       const handler = (_event: any, state: any) => callback(state);
       ipcRenderer.on('discord:voiceState', handler);

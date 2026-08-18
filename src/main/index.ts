@@ -5,6 +5,7 @@ import { registerDeviceHandlers } from './ipc/devices';
 import { registerDiscordHandlers } from './ipc/discord';
 import { registerProfileHandlers } from './ipc/profiles';
 import { registerActionHandlers } from './ipc/actions';
+import { registerSettingsHandlers } from './ipc/settings';
 import { registerAllPlugins, pluginManager } from './plugins';
 
 let mainWindow: BrowserWindow | null = null;
@@ -54,6 +55,7 @@ app.whenReady().then(async () => {
   registerDiscordHandlers(getWindow);
   registerProfileHandlers(getWindow);
   registerActionHandlers(getWindow);
+  registerSettingsHandlers();
 });
 
 app.on('window-all-closed', () => {

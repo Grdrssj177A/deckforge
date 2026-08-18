@@ -46,14 +46,6 @@ export function PluginProvider({ children }: { children: React.ReactNode }) {
     try {
       // Inyectar settings globales para nanoleaf
       const config = { ...action.config };
-      if (action.pluginId === 'nanoleaf') {
-        const settings = localStorage.getItem('deckforge_plugin_settings');
-        if (settings) {
-          const parsed = JSON.parse(settings);
-          config._globalIp = parsed.nanoleaf?.ip || '';
-          config._globalToken = parsed.nanoleaf?.token || '';
-        }
-      }
 
       const result = await window.deckforge.actions.execute({
         pluginId: action.pluginId,

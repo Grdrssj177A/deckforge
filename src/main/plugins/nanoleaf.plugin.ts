@@ -42,10 +42,12 @@ export class NanoleafPlugin implements DeckPlugin {
     { id: 'brightnessDown', pluginId: 'nanoleaf', name: 'Brightness Down', description: 'Disminuye brillo', defaultConfig: { command: 'brightnessDown', step: 20 } },
   ];
 
-  // IP y token se leen de settings globales (inyectados via config)
+  // IP y token se leen del SettingsManager
   private getCredentials(config: ActionConfig): { ip: string; token: string } {
-    const ip = config._globalIp as string || '';
-    const token = config._globalToken as string || '';
+    const { settingsManager } = require('../core');
+    const nanoleafSettings = settingsManager.get('nanoleaf');
+    const ip = (config._globalIp as string) || nanoleafSettings.ip || '';
+    const token = (config._globalToken as string) || nanoleafSettings.token || '';
     if (!ip || !token) throw new Error('IP y Token no configurados. Ve a ⚙️ Configuración global > Nanoleaf.');
     return { ip, token };
   }

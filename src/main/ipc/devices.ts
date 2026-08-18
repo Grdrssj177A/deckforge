@@ -1,6 +1,6 @@
 import { ipcMain, BrowserWindow } from 'electron';
-import { deviceManager } from '../core/DeviceManager';
-import { eventBus } from '../core/EventBus';
+import { deviceManager } from '../core';
+import { eventBus } from '../core';
 import { createLogger } from '../lib/logger';
 
 const log = createLogger('DevicesIPC');

@@ -1,4 +1,4 @@
-import { pluginManager } from '../core/PluginManager';
+import { pluginManager } from '../core';
 import { HotkeyPlugin } from './hotkey.plugin';
 import { SystemPlugin } from './system.plugin';
 import { NanoleafPlugin } from './nanoleaf.plugin';

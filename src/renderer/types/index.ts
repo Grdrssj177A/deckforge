@@ -78,6 +78,11 @@ export interface DeckForgeAPI {
   sound: {
     selectFile: () => Promise<string | null>;
   };
+  settings: {
+    getAll: () => Promise<{ success: boolean; settings: any }>;
+    update: (section: string, values: any) => Promise<{ success: boolean }>;
+    migrate: (data: string) => Promise<{ success: boolean }>;
+  };
   devices: {
     listAvailable: () => Promise<{ success: boolean; ports: any[]; error?: string }>;
     listConnected: () => Promise<{ success: boolean; devices: any[] }>;
@@ -87,13 +92,7 @@ export interface DeckForgeAPI {
     onStatus: (callback: (status: { connected: boolean; deviceId: string }) => void) => () => void;
   };
   discord: {
-    connect: (options?: { clientId?: string; clientSecret?: string }) => Promise<{ success: boolean; state?: { mute: boolean; deaf: boolean }; error?: string }>;
-    disconnect: () => Promise<{ success: boolean }>;
     getState: () => Promise<{ connected: boolean; mute: boolean; deaf: boolean }>;
-    toggleMute: () => Promise<{ success: boolean; state?: { mute: boolean; deaf: boolean }; error?: string }>;
-    toggleDeaf: () => Promise<{ success: boolean; state?: { mute: boolean; deaf: boolean }; error?: string }>;
-    setMute: (mute: boolean) => Promise<{ success: boolean; state?: { mute: boolean; deaf: boolean }; error?: string }>;
-    setDeaf: (deaf: boolean) => Promise<{ success: boolean; state?: { mute: boolean; deaf: boolean }; error?: string }>;
     onVoiceState: (callback: (state: { mute: boolean; deaf: boolean }) => void) => () => void;
     onStatus: (callback: (status: { connected: boolean }) => void) => () => void;
   };

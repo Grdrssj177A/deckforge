@@ -1,18 +1,19 @@
-import { Plugin, Action, generateId } from '@/types';
-import { getPluginDefaultsGlobal } from '@/store/SettingsContext';
+import { Plugin, generateId } from '@/types';
 import { getIconById } from '@/assets/iconPack';
 
-// Estado de Discord compartido entre acciones para iconos dinámicos
+// Estado de Discord (actualizado via eventos push del main)
 export let discordState = { connected: false, mute: false, deaf: false };
 
-// Evento para notificar que el estado de Discord cambió (para refrescar iconos)
 export const DISCORD_STATE_EVENT = 'deckforge:discordState';
 
 function emitDiscordStateChange() {
   window.dispatchEvent(new CustomEvent(DISCORD_STATE_EVENT));
 }
 
-// Listener global para actualizar el estado
+/**
+ * Inicializa los listeners de estado de Discord.
+ * Escucha eventos push del main (voiceState, status).
+ */
 export function initDiscordStateListener(): () => void {
   if (!window.deckforge) return () => {};
 
@@ -25,89 +26,34 @@ export function initDiscordStateListener(): () => void {
     emitDiscordStateChange();
   });
 
-  // Obtener estado inicial
+  // Estado inicial
   window.deckforge.discord.getState().then((state) => {
     discordState = state;
     emitDiscordStateChange();
   });
 
-  return () => {
-    unsubVoice();
-    unsubStatus();
-  };
+  return () => { unsubVoice(); unsubStatus(); };
 }
 
+/**
+ * Discord plugin (renderer side) — metadata + iconos dinámicos.
+ * Ejecución delegada al main via actions:execute.
+ */
 const discordPlugin: Plugin = {
   id: 'discord',
   name: 'Discord',
   icon: '💬',
   description: 'Control directo de Discord via RPC local',
   actions: [
-    {
-      id: generateId(),
-      pluginId: 'discord',
-      name: 'Toggle Mute',
-      icon: '🎤',
-      description: 'Activa/desactiva el micrófono',
-      config: { command: 'toggleMute', _iconImage: getIconById('mic')?.svg, _iconActive: getIconById('mic-mute')?.svg },
-    },
-    {
-      id: generateId(),
-      pluginId: 'discord',
-      name: 'Toggle Deafen',
-      icon: '🎧',
-      description: 'Activa/desactiva el audio',
-      config: { command: 'toggleDeafen', _iconImage: getIconById('headphones')?.svg, _iconActive: getIconById('volume-mute')?.svg },
-    },
+    { id: generateId(), pluginId: 'discord', name: 'Toggle Mute', icon: '🎤', description: 'Activa/desactiva micrófono', config: { command: 'toggleMute', _iconImage: getIconById('mic')?.svg, _iconActive: getIconById('mic-mute')?.svg } },
+    { id: generateId(), pluginId: 'discord', name: 'Toggle Deafen', icon: '🎧', description: 'Activa/desactiva audio', config: { command: 'toggleDeafen', _iconImage: getIconById('headphones')?.svg, _iconActive: getIconById('headphones-off')?.svg } },
   ],
 
-  async execute(action: Action): Promise<void> {
-    const { command } = action.config;
-
-    if (!window.deckforge) {
-      throw new Error('Electron API no disponible');
-    }
-
-    switch (command) {
-      case 'toggleMute': {
-        if (!discordState.connected) {
-          const defaults = getPluginDefaultsGlobal('discord');
-          const conn = await window.deckforge.discord.connect({ clientSecret: defaults.clientSecret || '' });
-          if (!conn.success) throw new Error(conn.error || 'Discord no conectado');
-          discordState.connected = true;
-        }
-        const res = await window.deckforge.discord.toggleMute();
-        if (!res.success) throw new Error(res.error || 'Error al togglear mute');
-        if (res.state) {
-          discordState = { ...discordState, ...res.state };
-        }
-        emitDiscordStateChange();
-        break;
-      }
-
-      case 'toggleDeafen': {
-        if (!discordState.connected) {
-          const defaults = getPluginDefaultsGlobal('discord');
-          const conn = await window.deckforge.discord.connect({ clientSecret: defaults.clientSecret || '' });
-          if (!conn.success) throw new Error(conn.error || 'Discord no conectado');
-          discordState.connected = true;
-        }
-        const res = await window.deckforge.discord.toggleDeaf();
-        if (!res.success) throw new Error(res.error || 'Error al togglear deafen');
-        if (res.state) {
-          discordState = { ...discordState, ...res.state };
-        }
-        emitDiscordStateChange();
-        break;
-      }
-
-      default:
-        throw new Error(`Comando Discord desconocido: ${command}`);
-    }
+  async execute(): Promise<void> {
+    // Ejecución delegada al main via actions:execute IPC
   },
 
-  // Icono dinámico: usa _iconActive (estado activo) y _iconImage (estado normal)
-  getDynamicIcon(action: Action): string | undefined {
+  getDynamicIcon(action) {
     const { command } = action.config;
     const iconActive = action.config._iconActive as string | undefined;
     const iconNormal = action.config._iconImage as string | undefined;
@@ -116,10 +62,7 @@ const discordPlugin: Plugin = {
       return discordState.mute ? (iconActive || getIconById('mic-mute')?.svg) : (iconNormal || getIconById('mic')?.svg);
     }
     if (command === 'toggleDeafen') {
-      return discordState.deaf ? (iconActive || getIconById('volume-mute')?.svg) : (iconNormal || getIconById('headphones')?.svg);
-    }
-    if (command === 'connect') {
-      return discordState.connected ? (iconActive || getIconById('discord')?.svg) : (iconNormal || undefined);
+      return discordState.deaf ? (iconActive || getIconById('headphones-off')?.svg) : (iconNormal || getIconById('headphones')?.svg);
     }
     return iconNormal || undefined;
   },

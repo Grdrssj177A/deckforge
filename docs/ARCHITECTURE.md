@@ -1,158 +1,111 @@
-# Arquitectura — DeckForge
+# Arquitectura — DeckForge v2
 
-Documentación técnica interna del proyecto.
+Documentación técnica interna. Actualizada tras el refactor Core.
 
 ## Stack
 
 | Capa | Tecnología |
 |------|-----------|
-| Desktop runtime | Electron 31 |
+| Desktop runtime | Electron 43 |
 | Frontend | React 18 + TypeScript 5.5 |
-| Build | Vite 5 |
-| Estado | React Context + localStorage |
-| Hardware | Serial (Arduino/RP2040) |
+| Build | Vite 7.3.6 |
+| Hotkeys | @hurdlegroup/robotjs (nativo) |
+| Hardware | serialport (Serial), futuro node-hid (USB HID) |
+
+## Arquitectura
+
+```
+React UI (renderer)
+  │ IPC
+  ▼
+DeckForge Core (main process)
+  ├── ActionManager     → anti-spam + ejecución centralizada
+  ├── PluginManager     → registro, initialize/dispose, execute
+  ├── ProfileManager    → persistencia perfiles (JSON en userData)
+  ├── SettingsManager   → config global + secretos (safeStorage)
+  ├── EventBus          → pub/sub tipado (sucesos del sistema)
+  └── DeviceManager     → dispositivos conectados
+        ├── ArduinoDevice → SerialTransport
+        ├── VirtualDevice → (grid UI)
+        └── futuro RP2040Device → USBHIDTransport
+```
 
 ## Estructura de archivos
 
 ```
 src/
-├── main/                        # Electron main process (backend)
-│   ├── index.ts                 # Crea ventana + registra IPC handlers
-│   ├── preload.ts               # Bridge seguro renderer ↔ main
-│   ├── discord-rpc.ts           # Cliente Discord RPC via named pipe
+├── main/
+│   ├── index.ts                 # Bootstrap: ventana + registrar IPC + plugins
+│   ├── preload.ts               # Bridge tipado renderer ↔ main
+│   ├── discord-rpc.ts           # Cliente Discord RPC (named pipe)
 │   ├── lib/
-│   │   └── logger.ts            # Logger centralizado (main)
-│   └── ipc/                     # Handlers IPC por dominio
+│   │   └── logger.ts
+│   ├── core/
+│   │   ├── index.ts             # Exports singletons
+│   │   ├── ActionManager.ts     # Ejecución + cooldown
+│   │   ├── PluginManager.ts     # Registro + ciclo de vida plugins
+│   │   ├── ProfileManager.ts    # Perfiles + folders + persistencia
+│   │   ├── SettingsManager.ts   # Config global + secretos encriptados
+│   │   ├── DeviceManager.ts     # Gestión de dispositivos
+│   │   ├── EventBus.ts          # Pub/sub tipado
+│   │   └── types.ts             # DeckPlugin, ActionContext, ActionState
+│   ├── plugins/
+│   │   ├── index.ts             # registerAllPlugins()
+│   │   ├── hotkey.plugin.ts     # robotjs keyTap
+│   │   ├── system.plugin.ts     # volumen, screenshot, URLs, apps
+│   │   ├── nanoleaf.plugin.ts   # HTTP REST local
+│   │   ├── discord.plugin.ts    # Wrapper sobre discord-rpc.ts
+│   │   └── obs.plugin.ts        # Placeholder WebSocket
+│   ├── devices/
+│   │   ├── DeckDevice.ts        # Interface base
+│   │   ├── ArduinoDevice.ts     # Interpreta protocolo BTN:X
+│   │   └── VirtualDevice.ts     # Grid UI como dispositivo
+│   ├── transports/
+│   │   ├── Transport.ts         # Interface base
+│   │   └── SerialTransport.ts   # Puerto serie
+│   └── ipc/
+│       ├── actions.ts           # execute, getState, plugins:list
+│       ├── devices.ts           # list, connect, disconnect
+│       ├── profiles.ts          # CRUD perfiles, folders, import/export
+│       ├── settings.ts          # get, update, migrate
 │       ├── dialogs.ts           # File/folder pickers
-│       ├── system.ts            # Volume, screenshot, lock, open URL/app
-│       ├── hotkey.ts            # Simulación de teclas (user32.dll)
-│       ├── nanoleaf.ts          # API HTTP local de Nanoleaf
-│       ├── serial.ts            # Conexión serial con Arduino/RP2040
-│       └── discord.ts           # Discord RPC connect/mute/deaf
+│       └── discord.ts           # Auto-connect + listeners estado
 │
-└── renderer/                    # React frontend
-    ├── main.tsx                 # Entry point React
-    ├── App.tsx                  # Layout + providers
-    ├── components/
-    │   ├── Header.tsx           # Perfiles + botón settings
-    │   ├── DeckGrid.tsx         # Grid responsive de botones
-    │   ├── DeckButton.tsx       # Botón individual (drop target + ejecutar)
-    │   ├── ActionPanel.tsx      # Sidebar con acciones arrastrables
-    │   ├── ActionItem.tsx       # Acción arrastrable
-    │   ├── ConfigModal.tsx      # Modal de configuración de acción
-    │   ├── ContextMenu.tsx      # Menú contextual (click derecho)
-    │   ├── ErrorBoundary.tsx    # Captura errores de rendering
-    │   ├── InfoModal.tsx        # Modal informativo (token copiable)
-    │   ├── SerialPanel.tsx      # Panel conexión Arduino
-    │   └── SettingsModal.tsx    # Configuración global
-    ├── plugins/
-    │   ├── index.ts             # Registry de plugins
-    │   ├── soundboard.ts        # Reproducir audio (Web Audio API)
-    │   ├── hotkey.ts            # Atajos de teclado
-    │   ├── obs.ts               # Control OBS (placeholder WebSocket)
-    │   ├── discord.ts           # Mute/deafen via RPC + iconos dinámicos
-    │   ├── nanoleaf.ts          # Control paneles Nanoleaf
-    │   └── system.ts            # URLs, apps, capturas, volumen, carpetas
-    ├── store/
-    │   ├── DragContext.tsx       # Estado de drag & drop (con ref sincrónico)
-    │   ├── PluginContext.tsx     # Registry + ejecución con anti-spam per-button
-    │   ├── ProfileContext.tsx    # Perfiles + páginas/folders + navegación
-    │   ├── SettingsContext.tsx   # Config global (Nanoleaf, OBS, Discord, grid)
-    │   ├── NotificationContext.tsx # Modales informativos
-    │   ├── persistence.ts       # localStorage con validación de schema
-    │   └── useSerialButtons.ts  # Hook: botones físicos → ejecutar acciones
-    ├── assets/
-    │   └── iconPack.ts          # Pack de iconos SVG integrados
-    ├── lib/
-    │   └── logger.ts            # Logger centralizado (renderer)
-    ├── styles/
-    │   ├── global.css           # Variables CSS, reset, scrollbar
-    │   └── app.css              # Layout + componentes
-    └── types/
-        └── index.ts             # Tipos compartidos del renderer
+└── renderer/
+    ├── App.tsx                  # Providers + rendererReady
+    ├── components/              # UI pura
+    ├── plugins/                 # Metadata + iconos dinámicos (NO ejecución)
+    ├── store/                   # Contexts (leer estado via IPC)
+    ├── assets/                  # Icon pack SVG
+    ├── lib/                     # Logger renderer
+    ├── styles/                  # CSS
+    └── types/                   # Tipos del renderer
 ```
 
-## Comunicación IPC (Frontend ↔ Backend)
+## Flujo de ejecución
 
 ```
-Renderer (React)                    Main (Electron/Node)
-─────────────────                   ────────────────────
-window.deckforge.system.*    ──►    ipc/system.ts
-window.deckforge.hotkey.*    ──►    ipc/hotkey.ts
-window.deckforge.nanoleaf.*  ──►    ipc/nanoleaf.ts
-window.deckforge.serial.*    ──►    ipc/serial.ts
-window.deckforge.discord.*   ──►    ipc/discord.ts
-window.deckforge.sound.*     ──►    ipc/dialogs.ts
+Click en botón UI
+  → PluginContext.executeAction()
+  → IPC: actions:execute { pluginId, actionId, config, context }
+  → ActionManager.execute() [anti-spam check]
+  → PluginManager.execute()
+  → Plugin.execute()
 
-                             ◄──    serial:buttonPress (push event)
-                             ◄──    serial:status (push event)
-                             ◄──    discord:voiceState (push event)
-                             ◄──    discord:status (push event)
+Botón físico Arduino
+  → SerialTransport recibe "BTN:X"
+  → ArduinoDevice.onButtonPress()
+  → DeviceManager → EventBus: button:press
+  → IPC push: device:buttonPress
+  → useSerialButtons → actions:execute
+  → ActionManager → Plugin
 ```
 
-- `invoke` = request/response (renderer pide, main responde)
-- `send` = push (main envía sin que renderer lo pida)
-- `preload.ts` es el bridge: expone API tipada sin acceso a Node
+## Reglas de diseño
 
-## Sistema de plugins
-
-Cada plugin implementa la interfaz `Plugin`:
-
-```typescript
-interface Plugin {
-  id: PluginId;
-  name: string;
-  icon: string;
-  actions: Action[];
-  execute: (action: Action) => Promise<void>;
-  getDynamicIcon?: (action: Action) => string | undefined;
-}
-```
-
-| Plugin | Ejecución | Backend necesario |
-|--------|-----------|-------------------|
-| Soundboard | Web Audio API en renderer | — |
-| Hotkeys | IPC → PowerShell temp file + user32.dll | ipc/hotkey.ts |
-| OBS | Placeholder (futuro: obs-websocket-js) | — |
-| Discord | IPC → Named pipe RPC | ipc/discord.ts + discord-rpc.ts |
-| Nanoleaf | IPC → HTTP REST local | ipc/nanoleaf.ts |
-| System | IPC → shell/PowerShell | ipc/system.ts |
-
-## Ejecución de acciones
-
-- Concurrencia: botones diferentes se ejecutan en paralelo
-- Anti-spam: per-button cooldown de 200ms tras ejecutar
-- El DeckButton usa `isActionBusy(actionId)` en vez de flag global
-- Errores se capturan y muestran feedback rojo sin crashear la app (ErrorBoundary)
-
-## Iconos dinámicos
-
-Los plugins pueden implementar `getDynamicIcon(action)` para devolver un icono SVG diferente según estado:
-- Discord: micrófono verde ↔ micrófono rojo tachado (según mute)
-- Soundboard: play ↔ stop (según si está sonando, modo toggle)
-
-El DeckGrid escucha eventos custom (`deckforge:discordState`, `deckforge:soundState`) para forzar re-render de iconos.
-
-## Persistencia
-
-- Perfiles: `localStorage['deckforge_profiles']` — validado al cargar (schema check)
-- Settings: `localStorage['deckforge_plugin_settings']` — merge profundo con defaults
-- Discord token: `%APPDATA%/deckforge/discord_token.txt`
-- En caso de datos corruptos: se resetea a defaults automáticamente
-
-## Hardware (Arduino / futuro RP2040)
-
-Protocolo actual: serial 9600 baud, Arduino envía `BTN:X\n`.
-El renderer escucha via `useSerialButtons` → mapea a la página actual → ejecuta acción.
-
-Futuro: RP2040 con USB HID bidireccional + pantallas LCD per button.
-
-## Desarrollo
-
-```bash
-npm install
-npm run dev              # Solo frontend (Vite)
-npm run electron:dev     # Electron + Vite + watch
-npm run build            # Build producción
-npm run package          # Crear ejecutable
-```
+- **Comandos** → llamadas directas (connect, execute, create)
+- **Sucesos** → EventBus (button:press, device:connected)
+- **Secretos** → safeStorage de Electron (nunca en renderer)
+- **Persistencia** → archivos JSON en userData (no localStorage)
+- **Soundboard** → excepción: ejecuta en renderer (Web Audio API)
+- **Renderer** → presentación, NO autoridad sobre ejecución ni persistencia
