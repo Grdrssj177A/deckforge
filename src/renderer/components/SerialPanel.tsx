@@ -1,30 +1,34 @@
 import { useState, useEffect, useCallback } from 'react';
-import { SerialPortInfo } from '@/types';
 
-interface SerialStatus {
+interface DeviceStatus {
   connected: boolean;
-  port: string;
-  error?: string;
+  deviceId: string;
 }
 
+/**
+ * Panel de conexión de dispositivos (Arduino/RP2040).
+ * Usa la API genérica `window.deckforge.devices` (agnóstica del transporte).
+ */
 export function SerialPanel() {
-  const [ports, setPorts] = useState<SerialPortInfo[]>([]);
-  const [status, setStatus] = useState<SerialStatus>({ connected: false, port: '' });
+  const [ports, setPorts] = useState<any[]>([]);
+  const [status, setStatus] = useState<DeviceStatus>({ connected: false, deviceId: '' });
   const [selectedPort, setSelectedPort] = useState('');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
 
-  // Suscribirse a eventos de status del serial
   useEffect(() => {
     if (!window.deckforge) return;
 
-    // Obtener estado inicial
-    window.deckforge.serial.getStatus().then(setStatus);
-
-    // Escuchar cambios de estado
-    const unsubStatus = window.deckforge.serial.onStatus((s) => {
+    const unsubStatus = window.deckforge.devices.onStatus((s) => {
       setStatus(s);
-      if (s.error) setError(s.error);
+    });
+
+    // Comprobar dispositivos ya conectados
+    window.deckforge.devices.listConnected().then((res) => {
+      if (res.success && res.devices.length > 0) {
+        const dev = res.devices.find((d: any) => d.type !== 'virtual');
+        if (dev) setStatus({ connected: true, deviceId: dev.id });
+      }
     });
 
     return () => { unsubStatus(); };
@@ -35,7 +39,7 @@ export function SerialPanel() {
     setLoading(true);
     setError('');
     try {
-      const result = await window.deckforge.serial.listPorts();
+      const result = await window.deckforge.devices.listAvailable();
       if (result.success) {
         setPorts(result.ports);
         if (result.ports.length > 0 && !selectedPort) {
@@ -54,7 +58,7 @@ export function SerialPanel() {
     setLoading(true);
     setError('');
     try {
-      const result = await window.deckforge.serial.connect(selectedPort, 9600);
+      const result = await window.deckforge.devices.connect(selectedPort, 9600);
       if (!result.success) {
         setError(result.error || 'Error de conexión');
       }
@@ -64,26 +68,22 @@ export function SerialPanel() {
   };
 
   const handleDisconnect = async () => {
-    if (!window.deckforge) return;
+    if (!window.deckforge || !status.deviceId) return;
     setLoading(true);
     try {
-      await window.deckforge.serial.disconnect();
+      await window.deckforge.devices.disconnect(status.deviceId);
+      setStatus({ connected: false, deviceId: '' });
     } finally {
       setLoading(false);
     }
   };
 
-  // Cargar puertos al montar
-  useEffect(() => {
-    refreshPorts();
-  }, [refreshPorts]);
+  useEffect(() => { refreshPorts(); }, [refreshPorts]);
 
   if (!window.deckforge) {
     return (
       <div className="serial-panel">
-        <div className="serial-unavailable">
-          Serial no disponible (ejecuta en Electron)
-        </div>
+        <div className="serial-unavailable">No disponible (ejecuta en Electron)</div>
       </div>
     );
   }
@@ -93,63 +93,39 @@ export function SerialPanel() {
       <div className="serial-header">
         <div className="serial-title">
           <span className="serial-title-icon">🎛️</span>
-          <span>Arduino</span>
+          <span>Dispositivo</span>
         </div>
         <div className={`serial-status-dot ${status.connected ? 'connected' : ''}`}
-          title={status.connected ? `Conectado: ${status.port}` : 'Desconectado'} />
+          title={status.connected ? `Conectado: ${status.deviceId}` : 'Desconectado'} />
       </div>
 
       {status.connected ? (
         <div className="serial-connected">
           <div className="serial-info">
-            <span className="serial-info-label">Puerto:</span>
-            <span className="serial-info-value">{status.port}</span>
-          </div>
-          <div className="serial-info">
-            <span className="serial-info-label">Estado:</span>
-            <span className="serial-info-value serial-ok">Conectado</span>
+            <span className="serial-info-label">ID:</span>
+            <span className="serial-info-value">{status.deviceId}</span>
           </div>
           <div className="serial-hint">
-            Botones 1-4 del Arduino → Slots 1-4 del grid
+            Botones físicos → Slots del grid
           </div>
-          <button
-            className="serial-btn disconnect"
-            onClick={handleDisconnect}
-            disabled={loading}
-          >
+          <button className="serial-btn disconnect" onClick={handleDisconnect} disabled={loading}>
             Desconectar
           </button>
         </div>
       ) : (
         <div className="serial-disconnected">
           <div className="serial-port-row">
-            <select
-              className="serial-select"
-              value={selectedPort}
-              onChange={(e) => setSelectedPort(e.target.value)}
-              disabled={loading}
-            >
+            <select className="serial-select" value={selectedPort} onChange={(e) => setSelectedPort(e.target.value)} disabled={loading}>
               {ports.length === 0 && <option value="">No hay puertos</option>}
-              {ports.map((p) => (
+              {ports.map((p: any) => (
                 <option key={p.path} value={p.path}>
                   {p.path} {p.manufacturer ? `(${p.manufacturer})` : ''}
                 </option>
               ))}
             </select>
-            <button
-              className="serial-btn refresh"
-              onClick={refreshPorts}
-              disabled={loading}
-              title="Buscar puertos"
-            >
-              🔄
-            </button>
+            <button className="serial-btn refresh" onClick={refreshPorts} disabled={loading} title="Buscar puertos">🔄</button>
           </div>
-          <button
-            className="serial-btn connect"
-            onClick={handleConnect}
-            disabled={loading || !selectedPort}
-          >
+          <button className="serial-btn connect" onClick={handleConnect} disabled={loading || !selectedPort}>
             {loading ? 'Conectando...' : 'Conectar'}
           </button>
         </div>

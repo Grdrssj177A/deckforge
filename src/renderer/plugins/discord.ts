@@ -23,8 +23,6 @@ export function initDiscordStateListener(): () => void {
   const unsubStatus = window.deckforge.discord.onStatus((status) => {
     discordState = { ...discordState, connected: status.connected };
     emitDiscordStateChange();
-    if (status.connected) startPolling();
-    else stopPolling();
   });
 
   // Obtener estado inicial
@@ -33,42 +31,9 @@ export function initDiscordStateListener(): () => void {
     emitDiscordStateChange();
   });
 
-  // Polling solo cuando Discord está conectado Y la ventana es visible
-  let pollInterval: ReturnType<typeof setInterval> | null = null;
-
-  const startPolling = () => {
-    if (pollInterval) return;
-    pollInterval = setInterval(async () => {
-      if (!discordState.connected || document.hidden) return;
-      try {
-        const state = await window.deckforge!.discord.getState();
-        if (state.mute !== discordState.mute || state.deaf !== discordState.deaf) {
-          discordState = { ...discordState, mute: state.mute, deaf: state.deaf };
-          emitDiscordStateChange();
-        }
-      } catch { /* ignore */ }
-    }, 2000);
-  };
-
-  const stopPolling = () => {
-    if (pollInterval) { clearInterval(pollInterval); pollInterval = null; }
-  };
-
-  // Iniciar/parar según visibilidad
-  const handleVisibility = () => {
-    if (document.hidden) stopPolling();
-    else if (discordState.connected) startPolling();
-  };
-  document.addEventListener('visibilitychange', handleVisibility);
-
-  // Iniciar si ya estamos conectados
-  if (discordState.connected) startPolling();
-
   return () => {
     unsubVoice();
     unsubStatus();
-    stopPolling();
-    document.removeEventListener('visibilitychange', handleVisibility);
   };
 }
 

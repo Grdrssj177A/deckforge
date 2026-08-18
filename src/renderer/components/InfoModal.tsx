@@ -30,7 +30,7 @@ export function InfoModal() {
   };
 
   return (
-    <div className="modal-overlay" onClick={handleClose}>
+    <div className="modal-overlay" onMouseDown={(e) => { if (e.target === e.currentTarget) handleClose(); }}>
       <div className="modal-content info-modal" onClick={(e) => e.stopPropagation()}>
         <header className="modal-header">
           <span className="modal-icon">ℹ️</span>

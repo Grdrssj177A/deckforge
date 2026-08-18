@@ -170,7 +170,7 @@ export class DiscordRPC extends EventEmitter {
   private handleFrame(data: any): void {
     const { cmd, evt, nonce, data: payload } = data;
 
-    // DISPATCH events
+    // Event dispatches (pushed by Discord without request)
     if (cmd === 'DISPATCH' || (!cmd && evt)) {
       if (evt === 'READY') {
         this.emit('_ready', payload);
@@ -180,6 +180,14 @@ export class DiscordRPC extends EventEmitter {
         this.handleVoiceUpdate(payload);
         return;
       }
+      return;
+    }
+
+    // SUBSCRIBE response — also comes with evt field
+    if (cmd === 'SUBSCRIBE' && nonce && this.pendingCallbacks.has(nonce)) {
+      const cb = this.pendingCallbacks.get(nonce)!;
+      this.pendingCallbacks.delete(nonce);
+      cb.resolve(payload);
       return;
     }
 
@@ -236,6 +244,26 @@ export class DiscordRPC extends EventEmitter {
         if (this.pendingCallbacks.has(id)) {
           this.pendingCallbacks.delete(id);
           reject(new Error(`Command ${cmd} timed out`));
+        }
+      }, 10000);
+    });
+  }
+
+  /**
+   * Suscribirse a un evento de Discord.
+   * El protocolo requiere { cmd: "SUBSCRIBE", evt: "EVENT_NAME", nonce: "..." }
+   * (evt va a nivel top, no dentro de args)
+   */
+  private subscribe(event: string, args: object = {}): Promise<any> {
+    return new Promise((resolve, reject) => {
+      const id = String(++this.nonce);
+      this.pendingCallbacks.set(id, { resolve, reject });
+      this.sendPacket(Opcode.FRAME, { cmd: 'SUBSCRIBE', evt: event, args, nonce: id });
+
+      setTimeout(() => {
+        if (this.pendingCallbacks.has(id)) {
+          this.pendingCallbacks.delete(id);
+          reject(new Error(`Subscribe to ${event} timed out`));
         }
       }, 10000);
     });
@@ -331,7 +359,7 @@ export class DiscordRPC extends EventEmitter {
 
     // Subscribe to voice settings updates
     try {
-      await this.sendCommand('SUBSCRIBE', { evt: 'VOICE_SETTINGS_UPDATE' } as any);
+      await this.subscribe('VOICE_SETTINGS_UPDATE');
     } catch { /* Some scopes may not allow this */ }
 
     // Get initial voice state

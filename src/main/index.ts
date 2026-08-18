@@ -1,11 +1,11 @@
 import { app, BrowserWindow } from 'electron';
 import { join } from 'path';
 import { registerDialogHandlers } from './ipc/dialogs';
-import { registerSystemHandlers } from './ipc/system';
-import { registerHotkeyHandlers } from './ipc/hotkey';
-import { registerNanoleafHandlers } from './ipc/nanoleaf';
-import { registerSerialHandlers } from './ipc/serial';
+import { registerDeviceHandlers } from './ipc/devices';
 import { registerDiscordHandlers } from './ipc/discord';
+import { registerProfileHandlers } from './ipc/profiles';
+import { registerActionHandlers } from './ipc/actions';
+import { registerAllPlugins, pluginManager } from './plugins';
 
 let mainWindow: BrowserWindow | null = null;
 
@@ -41,16 +41,19 @@ function createWindow(): void {
 
 // ─── App Lifecycle ──────────────────────────────────────────────────────────
 
-app.whenReady().then(() => {
+app.whenReady().then(async () => {
   createWindow();
+
+  // Register and initialize plugins
+  registerAllPlugins();
+  await pluginManager.initializeAll();
 
   // Register all IPC handlers
   registerDialogHandlers(getWindow);
-  registerSystemHandlers();
-  registerHotkeyHandlers();
-  registerNanoleafHandlers();
-  registerSerialHandlers(getWindow);
+  registerDeviceHandlers(getWindow);
   registerDiscordHandlers(getWindow);
+  registerProfileHandlers(getWindow);
+  registerActionHandlers(getWindow);
 });
 
 app.on('window-all-closed', () => {

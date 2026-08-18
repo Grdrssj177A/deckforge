@@ -84,7 +84,7 @@ export function useSerialButtons() {
 
   useEffect(() => {
     if (!window.deckforge) return;
-    const unsubscribe = window.deckforge.serial.onButtonPress(handleButtonPress);
+    const unsubscribe = window.deckforge.devices.onButtonPress(handleButtonPress);
     return () => { unsubscribe(); };
   }, [handleButtonPress]);
 }

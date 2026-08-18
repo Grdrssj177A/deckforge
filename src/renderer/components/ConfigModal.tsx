@@ -180,7 +180,7 @@ export function ConfigModal({ action, onSave, onCancel }: ConfigModalProps) {
   if (fields.length === 0 && action.config.command === 'stopAll') return null;
 
   return (
-    <div className="modal-overlay" onClick={onCancel}>
+    <div className="modal-overlay" onMouseDown={(e) => { if (e.target === e.currentTarget) onCancel(); }}>
       <div className="modal-content" onClick={(e) => e.stopPropagation()} ref={modalRef} tabIndex={-1}>
         <header className="modal-header">
           <span className="modal-icon">

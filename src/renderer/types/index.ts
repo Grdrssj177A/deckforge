@@ -60,44 +60,31 @@ export interface PluginState {
 
 // ─── Electron API (expuesta por preload) ─────────────────────────────────────
 
-export interface SerialPortInfo {
-  path: string;
-  manufacturer: string;
-  vendorId: string;
-  productId: string;
-  friendlyName: string;
-}
-
 export interface DeckForgeAPI {
+  app: {
+    rendererReady: () => Promise<{ success: boolean }>;
+  };
+  actions: {
+    execute: (params: { pluginId: string; actionId: string; config: any; context: any }) => Promise<{ success: boolean; error?: string }>;
+    getState: (params: { pluginId: string; actionId: string; config: any }) => Promise<{ success: boolean; state: any }>;
+  };
+  plugins: {
+    list: () => Promise<{ success: boolean; plugins: any[] }>;
+  };
   system: {
-    openUrl: (url: string) => Promise<{ success: boolean }>;
-    openApp: (path: string) => Promise<{ success: boolean; error?: string }>;
-    volumeUp: (step?: number) => Promise<{ success: boolean }>;
-    volumeDown: (step?: number) => Promise<{ success: boolean }>;
-    volumeMute: () => Promise<{ success: boolean }>;
-    screenshot: (options?: { savePath?: string; format?: string; captureMode?: string }) => Promise<{ success: boolean; filePath?: string; error?: string }>;
-    lockScreen: () => Promise<{ success: boolean }>;
     selectFile: (filters?: { name: string; extensions: string[] }[]) => Promise<string | null>;
     selectFolder: () => Promise<string | null>;
-  };
-  hotkey: {
-    send: (keys: string, delay?: number) => Promise<{ success: boolean; error?: string }>;
   };
   sound: {
     selectFile: () => Promise<string | null>;
   };
-  nanoleaf: {
-    pair: (ip: string) => Promise<{ success: boolean; token?: string; error?: string }>;
-    execute: (ip: string, token: string, command: string, params?: any) => Promise<{ success: boolean; error?: string }>;
-    getEffects: (ip: string, token: string) => Promise<{ success: boolean; effects?: string[]; error?: string }>;
-  };
-  serial: {
-    listPorts: () => Promise<{ success: boolean; ports: SerialPortInfo[]; error?: string }>;
-    connect: (port: string, baudRate?: number) => Promise<{ success: boolean; port?: string; error?: string }>;
-    disconnect: () => Promise<{ success: boolean; error?: string }>;
-    getStatus: () => Promise<{ connected: boolean; port: string }>;
+  devices: {
+    listAvailable: () => Promise<{ success: boolean; ports: any[]; error?: string }>;
+    listConnected: () => Promise<{ success: boolean; devices: any[] }>;
+    connect: (port: string, baudRate?: number) => Promise<{ success: boolean; deviceId?: string; error?: string }>;
+    disconnect: (deviceId: string) => Promise<{ success: boolean; error?: string }>;
     onButtonPress: (callback: (buttonIndex: number) => void) => () => void;
-    onStatus: (callback: (status: { connected: boolean; port: string; error?: string }) => void) => () => void;
+    onStatus: (callback: (status: { connected: boolean; deviceId: string }) => void) => () => void;
   };
   discord: {
     connect: (options?: { clientId?: string; clientSecret?: string }) => Promise<{ success: boolean; state?: { mute: boolean; deaf: boolean }; error?: string }>;
@@ -109,6 +96,22 @@ export interface DeckForgeAPI {
     setDeaf: (deaf: boolean) => Promise<{ success: boolean; state?: { mute: boolean; deaf: boolean }; error?: string }>;
     onVoiceState: (callback: (state: { mute: boolean; deaf: boolean }) => void) => () => void;
     onStatus: (callback: (status: { connected: boolean }) => void) => () => void;
+  };
+  profiles: {
+    getAll: () => Promise<{ profiles: any[]; activeId: string }>;
+    setActive: (id: string) => Promise<{ success: boolean }>;
+    create: (name: string) => Promise<{ success: boolean; profile: any }>;
+    delete: (id: string) => Promise<{ success: boolean }>;
+    rename: (id: string, name: string) => Promise<{ success: boolean }>;
+    duplicate: (id: string) => Promise<{ success: boolean; profile: any }>;
+    assignAction: (profileId: string, pageId: string | null, position: number, action: any) => Promise<{ success: boolean }>;
+    removeAction: (profileId: string, pageId: string | null, position: number) => Promise<{ success: boolean }>;
+    moveButton: (profileId: string, pageId: string | null, from: number, to: number) => Promise<{ success: boolean }>;
+    createFolder: (profileId: string, pageId: string | null, position: number, name: string, icon: string) => Promise<{ success: boolean; folderId: string }>;
+    deleteFolder: (profileId: string, folderId: string) => Promise<{ success: boolean }>;
+    migrate: (data: string) => Promise<{ success: boolean }>;
+    export: (data: string) => Promise<{ success: boolean; filePath?: string; error?: string }>;
+    import: () => Promise<{ success: boolean; data?: string; error?: string }>;
   };
 }
 

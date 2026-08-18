@@ -1,5 +1,9 @@
 import { useState } from 'react';
 import { useSettings } from '@/store/SettingsContext';
+import { useProfiles } from '@/store/ProfileContext';
+import { createLogger } from '@/lib/logger';
+
+const log = createLogger('Settings');
 
 interface SettingsModalProps {
   onClose: () => void;
@@ -7,6 +11,7 @@ interface SettingsModalProps {
 
 export function SettingsModal({ onClose }: SettingsModalProps) {
   const { settings, updateSettings } = useSettings();
+  const { profiles } = useProfiles();
   const [local, setLocal] = useState(settings);
 
   const handleSave = () => {
@@ -17,8 +22,105 @@ export function SettingsModal({ onClose }: SettingsModalProps) {
     onClose();
   };
 
+  const [exportSelection, setExportSelection] = useState<Set<string>>(new Set());
+  const [showExportModal, setShowExportModal] = useState(false);
+  const [importedProfiles, setImportedProfiles] = useState<{ id: string; name: string }[]>([]);
+
+  const handleExportOpen = () => {
+    setExportSelection(new Set());
+    setShowExportModal(true);
+  };
+
+  const handleExportToggle = (id: string) => {
+    setExportSelection((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  };
+
+  const handleExportConfirm = async () => {
+    if (!window.deckforge || exportSelection.size === 0) return;
+    const selected = profiles.filter((p) => exportSelection.has(p.id));
+    // Si es un solo perfil exportar como objeto, si son varios como array
+    const data = selected.length === 1
+      ? JSON.stringify(selected[0], null, 2)
+      : JSON.stringify(selected, null, 2);
+    const result = await window.deckforge.profiles.export(data);
+    if (result.success) {
+      log.info(`Exported ${selected.length} profile(s)`);
+      setShowExportModal(false);
+    }
+  };
+
+  const handleImport = async () => {
+    if (!window.deckforge) return;
+    const result = await window.deckforge.profiles.import();
+    if (result.success && result.data) {
+      try {
+        const parsed = JSON.parse(result.data);
+        const toImport = Array.isArray(parsed) ? parsed : [parsed];
+        const imported: { id: string; name: string }[] = [];
+
+        for (const p of toImport) {
+          // Usar IPC para importar al ProfileManager (no localStorage)
+          const res = await window.deckforge.profiles.create(p.name + ' (importado)');
+          if (res.success && res.profile) {
+            // Ahora asignar las acciones del perfil importado
+            // Forma simple: usar assignAction para cada botón que tenga acción
+            const profileId = res.profile.id;
+            for (const btn of p.buttons || []) {
+              if (btn.action) {
+                await window.deckforge.profiles.assignAction(profileId, null, btn.position, btn.action);
+              }
+              if (btn.folderId) {
+                // Recrear carpetas
+                const page = (p.pages || []).find((pg: any) => pg.id === btn.folderId);
+                if (page) {
+                  const folderRes = await window.deckforge.profiles.createFolder(profileId, null, btn.position, page.name, page.icon);
+                  // Asignar acciones dentro de la carpeta
+                  if (folderRes.success && folderRes.folderId) {
+                    for (const subBtn of page.buttons || []) {
+                      if (subBtn.action) {
+                        await window.deckforge.profiles.assignAction(profileId, folderRes.folderId, subBtn.position, subBtn.action);
+                      }
+                    }
+                  }
+                }
+              }
+            }
+            imported.push({ id: profileId, name: p.name + ' (importado)' });
+          }
+        }
+
+        setImportedProfiles(imported);
+      } catch {
+        log.error('Invalid profile format');
+      }
+    }
+  };
+
+  const handleRenameChange = (id: string, newName: string) => {
+    setImportedProfiles((prev) => prev.map((p) => p.id === id ? { ...p, name: newName } : p));
+  };
+
+  const handleRenameConfirm = async () => {
+    if (!window.deckforge) return;
+    for (const p of importedProfiles) {
+      await window.deckforge.profiles.rename(p.id, p.name);
+    }
+    setImportedProfiles([]);
+    window.location.reload();
+  };
+
+  const handleRenameSkip = () => {
+    setImportedProfiles([]);
+    window.location.reload();
+  };
+
   return (
-    <div className="modal-overlay" onClick={onClose}>
+    <div className="modal-overlay" onMouseDown={(e) => { if (e.target === e.currentTarget) onClose(); }}>
       <div className="modal-content settings-modal" onClick={(e) => e.stopPropagation()}>
         <header className="modal-header">
           <span className="modal-icon">⚙️</span>
@@ -150,7 +252,69 @@ export function SettingsModal({ onClose }: SettingsModalProps) {
               <span className="settings-grid-total">= {local.grid.cols * local.grid.rows} botones</span>
             </div>
           </div>
+          {/* Perfiles: Export/Import */}
+          <div className="settings-section">
+            <div className="settings-section-header">
+              <span>💾</span> Perfiles
+            </div>
+            <div className="modal-file-field">
+              <button type="button" className="modal-btn-browse" onClick={handleExportOpen}>📤 Exportar</button>
+              <button type="button" className="modal-btn-browse" onClick={handleImport}>📥 Importar</button>
+            </div>
+          </div>
         </div>
+
+        {/* Modal de selección de export */}
+        {showExportModal && (
+          <div className="settings-export-overlay">
+            <div className="settings-export-modal">
+              <h4>Selecciona perfiles a exportar</h4>
+              <div className="settings-export-list">
+                {profiles.map((p) => (
+                  <label key={p.id} className="settings-export-item">
+                    <input
+                      type="checkbox"
+                      checked={exportSelection.has(p.id)}
+                      onChange={() => handleExportToggle(p.id)}
+                    />
+                    <span>{p.name}</span>
+                  </label>
+                ))}
+              </div>
+              <div className="settings-export-actions">
+                <button type="button" className="modal-btn cancel" onClick={() => setShowExportModal(false)}>Cancelar</button>
+                <button type="button" className="modal-btn save" onClick={handleExportConfirm} disabled={exportSelection.size === 0}>
+                  Exportar ({exportSelection.size})
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* Popup de renombrar perfiles importados */}
+        {importedProfiles.length > 0 && (
+          <div className="settings-export-overlay">
+            <div className="settings-export-modal">
+              <h4>Perfiles importados ({importedProfiles.length})</h4>
+              <div className="settings-export-list">
+                {importedProfiles.map((p) => (
+                  <div key={p.id} className="modal-field">
+                    <input
+                      type="text"
+                      className="modal-input"
+                      value={p.name}
+                      onChange={(e) => handleRenameChange(p.id, e.target.value)}
+                    />
+                  </div>
+                ))}
+              </div>
+              <div className="settings-export-actions">
+                <button type="button" className="modal-btn cancel" onClick={handleRenameSkip}>Mantener nombres</button>
+                <button type="button" className="modal-btn save" onClick={handleRenameConfirm}>Guardar</button>
+              </div>
+            </div>
+          </div>
+        )}
 
         <footer className="modal-footer">
           <button type="button" className="modal-btn cancel" onClick={onClose}>Cancelar</button>

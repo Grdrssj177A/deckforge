@@ -1,79 +1,97 @@
-import React, { createContext, useContext, useState, useCallback, useRef } from 'react';
-import { Plugin, Action, PluginState } from '@/types';
+import React, { createContext, useContext, useCallback, useRef } from 'react';
+import { Action, PluginState } from '@/types';
 import { pluginRegistry } from '@/plugins';
-import { createLogger } from '@/lib/logger';
 
-const log = createLogger('Plugins');
-
-const COOLDOWN_MS = 200; // Cooldown per button to prevent spam
+const COOLDOWN_MS = 200;
 
 interface PluginContextValue extends PluginState {
-  executeAction: (action: Action) => Promise<void>;
+  executeAction: (action: Action, pageId?: string, profileId?: string) => Promise<void>;
   isActionBusy: (actionId: string) => boolean;
-  getPlugin: (id: string) => Plugin | undefined;
   getDynamicIcon: (action: Action) => string | undefined;
 }
 
 const PluginCtx = createContext<PluginContextValue | null>(null);
 
 export function PluginProvider({ children }: { children: React.ReactNode }) {
-  const [state] = useState<PluginState>({
-    plugins: pluginRegistry,
-    executing: false, // Kept for interface compat but no longer blocks globally
-  });
-
-  // Per-action busy tracking: actionId → timestamp when it becomes free
   const busyUntil = useRef<Map<string, number>>(new Map());
 
   const isActionBusy = useCallback((actionId: string): boolean => {
     const until = busyUntil.current.get(actionId);
     if (!until) return false;
-    if (Date.now() >= until) {
-      busyUntil.current.delete(actionId);
-      return false;
-    }
+    if (Date.now() >= until) { busyUntil.current.delete(actionId); return false; }
     return true;
   }, []);
 
-  const executeAction = useCallback(async (action: Action) => {
-    // Anti-spam: check if this specific action is in cooldown
-    if (isActionBusy(action.id)) {
-      log.debug(`Action "${action.name}" still in cooldown, skipping`);
+  const executeAction = useCallback(async (action: Action, pageId?: string, profileId?: string) => {
+    if (isActionBusy(action.id)) return;
+
+    // Soundboard se ejecuta localmente en el renderer (Web Audio API)
+    if (action.pluginId === 'soundboard') {
+      const soundPlugin = pluginRegistry.find((p) => p.id === 'soundboard');
+      if (soundPlugin) {
+        busyUntil.current.set(action.id, Date.now() + 60000);
+        try {
+          await soundPlugin.execute(action);
+        } finally {
+          busyUntil.current.set(action.id, Date.now() + COOLDOWN_MS);
+        }
+      }
       return;
     }
 
-    const plugin = pluginRegistry.find((p) => p.id === action.pluginId);
-    if (!plugin) {
-      log.warn(`Plugin not found: ${action.pluginId}`);
-      return;
-    }
+    // El resto se ejecuta en el main process via IPC
+    if (!window.deckforge) return;
 
-    // Mark as busy immediately
-    busyUntil.current.set(action.id, Date.now() + 60000); // Block until done + cooldown
-
+    busyUntil.current.set(action.id, Date.now() + 60000);
     try {
-      await plugin.execute(action);
-    } catch (error) {
-      log.error(`Error executing "${action.name}":`, error);
-      throw error; // Re-throw so DeckButton can show error feedback
+      // Inyectar settings globales para nanoleaf
+      const config = { ...action.config };
+      if (action.pluginId === 'nanoleaf') {
+        const settings = localStorage.getItem('deckforge_plugin_settings');
+        if (settings) {
+          const parsed = JSON.parse(settings);
+          config._globalIp = parsed.nanoleaf?.ip || '';
+          config._globalToken = parsed.nanoleaf?.token || '';
+        }
+      }
+
+      const result = await window.deckforge.actions.execute({
+        pluginId: action.pluginId,
+        actionId: action.config.command as string || action.id,
+        config,
+        context: {
+          deviceId: 'virtual',
+          pageId: pageId || 'root',
+          buttonId: 0,
+          profileId: profileId || '',
+          modifiers: { shift: false, ctrl: false, alt: false },
+        },
+      });
+
+      if (!result.success && result.error && result.error !== 'cooldown') {
+        throw new Error(result.error);
+      }
     } finally {
-      // Set cooldown from now
       busyUntil.current.set(action.id, Date.now() + COOLDOWN_MS);
     }
   }, [isActionBusy]);
 
-  const getPlugin = useCallback(
-    (id: string) => state.plugins.find((p) => p.id === id),
-    [state.plugins]
-  );
-
   const getDynamicIcon = useCallback((action: Action) => {
+    // Soundboard: se ejecuta localmente, iconos dinámicos locales
     const plugin = pluginRegistry.find((p) => p.id === action.pluginId);
-    return plugin?.getDynamicIcon?.(action);
+    if (plugin?.getDynamicIcon) {
+      return plugin.getDynamicIcon(action);
+    }
+    return undefined;
   }, []);
 
+  const state: PluginState = {
+    plugins: pluginRegistry,
+    executing: false,
+  };
+
   return (
-    <PluginCtx.Provider value={{ ...state, executeAction, isActionBusy, getPlugin, getDynamicIcon }}>
+    <PluginCtx.Provider value={{ ...state, executeAction, isActionBusy, getDynamicIcon }}>
       {children}
     </PluginCtx.Provider>
   );

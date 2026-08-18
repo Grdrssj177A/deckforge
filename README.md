@@ -128,7 +128,7 @@ Protocolo USB HID bidireccional.
 
 ```bash
 # Clonar
-git clone https://github.com/tu-usuario/deckforge
+git clone https://github.com/Grdrssj177A/deckforge
 cd deckforge
 
 # Instalar

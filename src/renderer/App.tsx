@@ -34,6 +34,13 @@ function AppContent() {
     return cleanup;
   }, []);
 
+  // Notificar al main que el renderer está listo
+  useEffect(() => {
+    if (window.deckforge) {
+      window.deckforge.app.rendererReady();
+    }
+  }, []);
+
   return (
     <div className="app-layout">
       <Header />
