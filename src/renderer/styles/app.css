@@ -210,7 +210,11 @@
   opacity: 1;
 }
 
-.deck-button.drop-target {
+/* Durante un arrastre, el contenedor marca todos los slots como destino.
+   Antes cada botón recibía la clase por su cuenta, lo que obligaba a
+   re-renderizar los 36 al empezar y al terminar el arrastre. */
+.deck-button.drop-target,
+.deck-grid.dragging .deck-button {
   border-color: var(--accent);
   border-style: dashed;
   opacity: 1;
@@ -1464,4 +1468,23 @@ select.modal-input {
   border: 1px solid var(--accent);
   border-radius: 3px;
   outline: none;
+}
+
+
+.settings-error {
+  color: var(--danger) !important;
+}
+
+.settings-success {
+  color: var(--success) !important;
+}
+
+/* ─── Error de guardado en el footer de Configuración ───────────────────────── */
+/* El footer es flex con justify-content: flex-end, así que el mensaje se
+   empuja a la izquierda y los botones quedan a la derecha. */
+.settings-save-error {
+  margin-right: auto;
+  align-self: center;
+  max-width: 60%;
+  text-align: left;
 }

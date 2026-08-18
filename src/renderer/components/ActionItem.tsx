@@ -1,13 +1,13 @@
 import React from 'react';
 import { Action } from '@/types';
-import { useDrag } from '@/store/DragContext';
+import { useDragActions } from '@/store/DragContext';
 
 interface ActionItemProps {
   action: Action;
 }
 
 export function ActionItem({ action }: ActionItemProps) {
-  const { startDrag, endDrag } = useDrag();
+  const { startDrag, endDrag } = useDragActions();
 
   const handleDragStart = (e: React.DragEvent) => {
     e.dataTransfer.effectAllowed = 'all';

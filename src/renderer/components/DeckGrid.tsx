@@ -1,6 +1,7 @@
-import { useState, useEffect } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useProfiles } from '@/store/ProfileContext';
 import { useSettings } from '@/store/SettingsContext';
+import { useDragState } from '@/store/DragContext';
 import { SERIAL_BUTTON_EVENT, SerialButtonEvent } from '@/store/useSerialButtons';
 import { SOUND_STATE_EVENT } from '@/plugins/soundboard';
 import { DISCORD_STATE_EVENT } from '@/plugins/discord';
@@ -10,8 +11,15 @@ import { ErrorBoundary } from './ErrorBoundary';
 export function DeckGrid() {
   const { currentButtons, currentPageId, navigateBack } = useProfiles();
   const { settings } = useSettings();
+  const { dragging } = useDragState();
   const [serialFeedback, setSerialFeedback] = useState<{ index: number; status: string } | null>(null);
-  const [, forceUpdate] = useState(0);
+
+  /**
+   * Contador que invalida los iconos dinámicos (soundboard, Discord).
+   * Se mantiene como estado del grid porque los iconos dependen de módulos
+   * globales, no de props; los botones memoizados lo reciben como prop.
+   */
+  const [iconRevision, setIconRevision] = useState(0);
 
   const cols = settings.grid.cols;
   const rows = settings.grid.rows;
@@ -19,9 +27,10 @@ export function DeckGrid() {
 
   const isInFolder = !!currentPageId;
   // En folder, slot 0 es "Volver", así que mostramos totalSlots - 1 botones de la página
-  const displayButtons = isInFolder
-    ? currentButtons.slice(0, totalSlots - 1)
-    : currentButtons.slice(0, totalSlots);
+  const displayButtons = useMemo(
+    () => (isInFolder ? currentButtons.slice(0, totalSlots - 1) : currentButtons.slice(0, totalSlots)),
+    [currentButtons, isInFolder, totalSlots]
+  );
 
   // Escuchar feedback de botones físicos
   useEffect(() => {
@@ -35,20 +44,22 @@ export function DeckGrid() {
   }, []);
 
   // Refrescar iconos dinámicos
+  const bumpIcons = useCallback(() => setIconRevision((n) => n + 1), []);
   useEffect(() => {
-    const handler = () => forceUpdate((n) => n + 1);
-    window.addEventListener(SOUND_STATE_EVENT, handler);
-    window.addEventListener(DISCORD_STATE_EVENT, handler);
+    window.addEventListener(SOUND_STATE_EVENT, bumpIcons);
+    window.addEventListener(DISCORD_STATE_EVENT, bumpIcons);
     return () => {
-      window.removeEventListener(SOUND_STATE_EVENT, handler);
-      window.removeEventListener(DISCORD_STATE_EVENT, handler);
+      window.removeEventListener(SOUND_STATE_EVENT, bumpIcons);
+      window.removeEventListener(DISCORD_STATE_EVENT, bumpIcons);
     };
-  }, []);
+  }, [bumpIcons]);
+
+  const gridClass = `deck-grid${dragging ? ' dragging' : ''}`;
 
   return (
     <section className="deck-grid-container" aria-label="Grid de botones">
       <div
-        className="deck-grid"
+        className={gridClass}
         style={{
           gridTemplateColumns: `repeat(${cols}, minmax(0, 1fr))`,
           gridTemplateRows: `repeat(${rows}, minmax(0, 1fr))`,
@@ -71,7 +82,7 @@ export function DeckGrid() {
           const feedback = serialFeedback?.index === arduinoIndex ? serialFeedback.status : undefined;
           return (
             <ErrorBoundary key={`${currentPageId || 'root'}-${slot.position}`} name={`Button-${slot.position}`}>
-              <DeckButton slot={slot} serialFeedback={feedback} />
+              <DeckButton slot={slot} serialFeedback={feedback} iconRevision={iconRevision} />
             </ErrorBoundary>
           );
         })}

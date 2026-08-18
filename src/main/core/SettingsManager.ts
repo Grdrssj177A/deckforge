@@ -2,8 +2,16 @@ import { app, safeStorage } from 'electron';
 import { join } from 'path';
 import { readFileSync, writeFileSync, existsSync } from 'fs';
 import { createLogger } from '../lib/logger';
+import { ValidationError, validateInt, validateLocalHost } from '../lib/validate';
 
 const log = createLogger('SettingsManager');
+
+/**
+ * Marcador que sustituye a los secretos cuando se envían al renderer.
+ * El renderer nunca ve el valor real, así que si nos lo devuelve en un update
+ * significa "no cambiar", no "guardar estos ocho puntos".
+ */
+export const SECRET_MASK = '••••••••';
 
 export interface PluginSettings {
   nanoleaf: { ip: string; token: string };
@@ -27,6 +35,83 @@ const SECRET_FIELDS: Array<{ section: keyof PluginSettings; field: string }> = [
   { section: 'obs', field: 'password' },
   { section: 'discord', field: 'clientSecret' },
 ];
+
+const VALID_SECTIONS = Object.keys(DEFAULT_SETTINGS) as Array<keyof PluginSettings>;
+
+const MAX_STRING_LENGTH = 256;
+
+function isSecretField(section: string, field: string): boolean {
+  return SECRET_FIELDS.some((s) => s.section === section && s.field === field);
+}
+
+function validateText(raw: unknown, label: string): string {
+  if (raw === undefined || raw === null) return '';
+  if (typeof raw !== 'string') {
+    throw new ValidationError(`${label} debe ser texto`);
+  }
+  const value = raw.trim();
+  if (value.length > MAX_STRING_LENGTH) {
+    throw new ValidationError(`${label} excede ${MAX_STRING_LENGTH} caracteres`);
+  }
+  return value;
+}
+
+/** Valida un único campo. Lanza ValidationError si el valor no es admisible. */
+function validateField(section: keyof PluginSettings, field: string, raw: unknown): string | number {
+  switch (`${section}.${field}`) {
+    case 'nanoleaf.ip': {
+      const ip = validateText(raw, 'IP de Nanoleaf');
+      return ip === '' ? '' : validateLocalHost(ip, 'IP de Nanoleaf');
+    }
+    case 'grid.cols':
+      return validateInt(raw, 2, 6, DEFAULT_SETTINGS.grid.cols, 'Columnas');
+    case 'grid.rows':
+      return validateInt(raw, 2, 6, DEFAULT_SETTINGS.grid.rows, 'Filas');
+    default:
+      return validateText(raw, `${section}.${field}`);
+  }
+}
+
+/**
+ * Filtra un objeto de valores a los campos conocidos de la sección, con el tipo
+ * y el rango correctos. Descarta claves desconocidas y secretos enmascarados
+ * (que significan "sin cambios").
+ *
+ * `tolerant` se usa al leer de disco o migrar: se omite el campo inválido en vez
+ * de rechazar toda la operación. En un update del renderer conviene lo contrario,
+ * para que el usuario vea el error.
+ */
+function sanitizeSectionValues(
+  section: keyof PluginSettings,
+  values: unknown,
+  tolerant = false
+): Record<string, string | number> {
+  if (!values || typeof values !== 'object' || Array.isArray(values)) {
+    if (tolerant) return {};
+    throw new ValidationError('Los valores de configuración deben ser un objeto');
+  }
+  const input = values as Record<string, unknown>;
+  const out: Record<string, string | number> = {};
+
+  for (const field of Object.keys(DEFAULT_SETTINGS[section])) {
+    if (!Object.prototype.hasOwnProperty.call(input, field)) continue;
+    const raw = input[field];
+
+    // Un secreto enmascarado nunca debe sobrescribir el secreto real.
+    if (isSecretField(section, field) && raw === SECRET_MASK) continue;
+
+    if (tolerant) {
+      try {
+        out[field] = validateField(section, field, raw);
+      } catch (e) {
+        log.warn(`Ignoring invalid value for ${section}.${field}:`, e instanceof Error ? e.message : e);
+      }
+    } else {
+      out[field] = validateField(section, field, raw);
+    }
+  }
+  return out;
+}
 
 /**
  * SettingsManager: gestiona configuración global de plugins.
@@ -52,13 +137,12 @@ export class SettingsManager {
       if (existsSync(this.settingsPath)) {
         const raw = readFileSync(this.settingsPath, 'utf-8');
         const parsed = JSON.parse(raw);
-        this.settings = {
-          nanoleaf: { ...DEFAULT_SETTINGS.nanoleaf, ...(parsed.nanoleaf || {}) },
-          obs: { ...DEFAULT_SETTINGS.obs, ...(parsed.obs || {}) },
-          discord: { ...DEFAULT_SETTINGS.discord, ...(parsed.discord || {}) },
-          grid: { ...DEFAULT_SETTINGS.grid, ...(parsed.grid || {}) },
-          audio: { ...DEFAULT_SETTINGS.audio, ...(parsed.audio || {}) },
-        };
+        // El archivo es editable a mano: se valida campo por campo y se
+        // descartan los valores fuera de rango en vez de confiar en ellos.
+        for (const section of VALID_SECTIONS) {
+          const clean = sanitizeSectionValues(section, parsed?.[section], true);
+          this.settings[section] = { ...DEFAULT_SETTINGS[section], ...clean } as any;
+        }
       }
     } catch (e) {
       log.error('Error loading settings:', e);
@@ -127,7 +211,7 @@ export class SettingsManager {
     const pub = JSON.parse(JSON.stringify(this.settings));
     for (const { section, field } of SECRET_FIELDS) {
       if (pub[section]?.[field]) {
-        pub[section][field] = '••••••••'; // Ocultar
+        pub[section][field] = SECRET_MASK; // Ocultar
       }
     }
     return pub;
@@ -137,21 +221,35 @@ export class SettingsManager {
     return { ...this.settings[section] };
   }
 
+  /**
+   * Aplica un update procedente del renderer.
+   * Lanza ValidationError si la sección o algún valor no son válidos; el
+   * llamador debe propagar ese error al usuario en vez de fallar en silencio.
+   */
   update<K extends keyof PluginSettings>(section: K, values: Partial<PluginSettings[K]>): void {
-    this.settings[section] = { ...this.settings[section], ...values };
+    if (typeof section !== 'string' || !VALID_SECTIONS.includes(section)) {
+      throw new ValidationError(`Sección de configuración desconocida: "${String(section).slice(0, 40)}"`);
+    }
+    const clean = sanitizeSectionValues(section, values);
+    if (Object.keys(clean).length === 0) {
+      log.info(`Settings update for "${section}" contained no applicable changes`);
+      return;
+    }
+    this.settings[section] = { ...this.settings[section], ...clean } as PluginSettings[K];
     this.save();
-    log.info(`Settings updated: ${section}`);
+    log.info(`Settings updated: ${section} (${Object.keys(clean).join(', ')})`);
   }
 
   /** Migrar desde localStorage del renderer (primera vez) */
   migrateFromRenderer(data: string): void {
     try {
       const parsed = JSON.parse(data);
-      if (parsed.nanoleaf) this.settings.nanoleaf = { ...DEFAULT_SETTINGS.nanoleaf, ...parsed.nanoleaf };
-      if (parsed.obs) this.settings.obs = { ...DEFAULT_SETTINGS.obs, ...parsed.obs };
-      if (parsed.discord) this.settings.discord = { ...DEFAULT_SETTINGS.discord, ...parsed.discord };
-      if (parsed.grid) this.settings.grid = { ...DEFAULT_SETTINGS.grid, ...parsed.grid };
-      if (parsed.audio) this.settings.audio = { ...DEFAULT_SETTINGS.audio, ...parsed.audio };
+      if (!parsed || typeof parsed !== 'object') return;
+      for (const section of VALID_SECTIONS) {
+        if (!parsed[section]) continue;
+        const clean = sanitizeSectionValues(section, parsed[section], true);
+        this.settings[section] = { ...this.settings[section], ...clean } as any;
+      }
       this.save();
       log.info('Settings migrated from renderer localStorage');
     } catch (e) {

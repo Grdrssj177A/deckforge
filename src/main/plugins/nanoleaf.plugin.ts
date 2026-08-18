@@ -1,8 +1,18 @@
 import * as http from 'http';
 import { DeckPlugin, ActionDefinition, ActionConfig, ActionContext, ActionState } from '../core/types';
+import { settingsManager } from '../core/SettingsManager';
 import { createLogger } from '../lib/logger';
+import {
+  ValidationError,
+  validateInt,
+  validateLocalHost,
+  validateUrlSegment,
+} from '../lib/validate';
 
 const log = createLogger('NanoleafPlugin');
+
+/** Respuesta máxima aceptada del panel, para no crecer sin límite. */
+const MAX_RESPONSE_BYTES = 256 * 1024;
 
 function nanoleafRequest(ip: string, method: string, path: string, body?: object): Promise<{ status: number; data: any }> {
   return new Promise((resolve, reject) => {
@@ -14,8 +24,18 @@ function nanoleafRequest(ip: string, method: string, path: string, body?: object
     }
     const req = http.request({ hostname: ip, port: 16021, path, method, headers, timeout: 5000 }, (res) => {
       let data = '';
-      res.on('data', (chunk) => (data += chunk));
+      let aborted = false;
+      res.on('data', (chunk) => {
+        if (aborted) return;
+        data += chunk;
+        if (data.length > MAX_RESPONSE_BYTES) {
+          aborted = true;
+          req.destroy();
+          reject(new Error('Respuesta demasiado grande del panel Nanoleaf'));
+        }
+      });
       res.on('end', () => {
+        if (aborted) return;
         let parsed: any = null;
         try { parsed = data ? JSON.parse(data) : null; } catch { parsed = data; }
         resolve({ status: res.statusCode || 0, data: parsed });
@@ -42,22 +62,28 @@ export class NanoleafPlugin implements DeckPlugin {
     { id: 'brightnessDown', pluginId: 'nanoleaf', name: 'Brightness Down', description: 'Disminuye brillo', defaultConfig: { command: 'brightnessDown', step: 20 } },
   ];
 
-  // IP y token se leen del SettingsManager
-  private getCredentials(config: ActionConfig): { ip: string; token: string } {
-    const { settingsManager } = require('../core');
+  /**
+   * IP y token salen siempre del SettingsManager, nunca de la config de la acción:
+   * `_globalIp`/`_globalToken` son inyectables desde el renderer via actions:execute,
+   * lo que permitiría apuntar la petición a un host arbitrario (SSRF).
+   */
+  private getCredentials(): { ip: string; token: string } {
     const nanoleafSettings = settingsManager.get('nanoleaf');
-    const ip = (config._globalIp as string) || nanoleafSettings.ip || '';
-    const token = (config._globalToken as string) || nanoleafSettings.token || '';
-    if (!ip || !token) throw new Error('IP y Token no configurados. Ve a ⚙️ Configuración global > Nanoleaf.');
-    return { ip, token };
+    if (!nanoleafSettings.ip || !nanoleafSettings.token) {
+      throw new ValidationError('IP y Token no configurados. Ve a ⚙️ Configuración global > Nanoleaf.');
+    }
+    return {
+      ip: validateLocalHost(nanoleafSettings.ip, 'IP de Nanoleaf'),
+      token: validateUrlSegment(nanoleafSettings.token, 'Token de Nanoleaf'),
+    };
   }
 
   async initialize(): Promise<void> {}
   async dispose(): Promise<void> {}
 
   async execute(actionId: string, config: ActionConfig, context: ActionContext): Promise<void> {
-    const { ip, token } = this.getCredentials(config);
-    const basePath = `/api/v1/${token}`;
+    const { ip, token } = this.getCredentials();
+    const basePath = `/api/v1/${encodeURIComponent(token)}`;
 
     switch (actionId) {
       case 'togglePower': {
@@ -70,7 +96,11 @@ export class NanoleafPlugin implements DeckPlugin {
         break;
       }
       case 'setColor': {
-        const hex = ((config.color as string) || '#ff6600').replace('#', '');
+        const rawColor = typeof config.color === 'string' && config.color.trim() ? config.color.trim() : '#ff6600';
+        if (!/^#?[0-9a-fA-F]{6}$/.test(rawColor)) {
+          throw new ValidationError(`Color inválido: "${rawColor.slice(0, 20)}". Formato esperado #rrggbb.`);
+        }
+        const hex = rawColor.replace('#', '');
         const r = parseInt(hex.slice(0, 2), 16) / 255;
         const g = parseInt(hex.slice(2, 4), 16) / 255;
         const b = parseInt(hex.slice(4, 6), 16) / 255;
@@ -89,11 +119,13 @@ export class NanoleafPlugin implements DeckPlugin {
         break;
       }
       case 'setEffect': {
-        await nanoleafRequest(ip, 'PUT', `${basePath}/effects`, { select: (config.effect as string) || 'Flames' });
+        const effect = typeof config.effect === 'string' && config.effect.trim() ? config.effect.trim() : 'Flames';
+        if (effect.length > 128) throw new ValidationError('Nombre de efecto demasiado largo');
+        await nanoleafRequest(ip, 'PUT', `${basePath}/effects`, { select: effect });
         break;
       }
       case 'brightnessUp': case 'brightnessDown': {
-        const step = Number(config.step) || 20;
+        const step = validateInt(config.step, 1, 100, 20, 'Incremento de brillo');
         let cur = 50;
         try {
           const r = await nanoleafRequest(ip, 'GET', `${basePath}/state/brightness`);

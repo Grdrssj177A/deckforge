@@ -10,6 +10,9 @@ export type DeckForgeEventMap = {
   'device:connected': { deviceId: string };
   'device:disconnected': { deviceId: string };
   'device:error': { deviceId: string; error: string };
+  'action:started': { pluginId: string; actionId: string; context: any };
+  'action:completed': { pluginId: string; actionId: string; context: any };
+  'action:failed': { pluginId: string; actionId: string; context: any; error: string };
 };
 
 type EventHandler<T> = (data: T) => void;
@@ -36,7 +39,8 @@ export class EventBus {
         try {
           handler(data);
         } catch (e) {
-          // No dejar que un handler roto tire a los demás
+          // Log but don't prevent other handlers from running
+          console.error(`[EventBus] Handler error on "${event}":`, e);
         }
       }
     }

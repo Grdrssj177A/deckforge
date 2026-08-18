@@ -1,57 +1,17 @@
 import { contextBridge, ipcRenderer } from 'electron';
+import { DeckForgeAPI } from '../shared/types/api';
+import { DeviceButtonEvent, DeviceStatusEvent } from '../shared/types/devices';
 
-export interface DeckForgeAPI {
-  app: {
-    rendererReady: () => Promise<{ success: boolean }>;
-  };
-  actions: {
-    execute: (params: { pluginId: string; actionId: string; config: any; context: any }) => Promise<{ success: boolean; error?: string }>;
-    getState: (params: { pluginId: string; actionId: string; config: any }) => Promise<{ success: boolean; state: any }>;
-  };
-  plugins: {
-    list: () => Promise<{ success: boolean; plugins: any[] }>;
-  };
-  system: {
-    selectFile: (filters?: { name: string; extensions: string[] }[]) => Promise<string | null>;
-    selectFolder: () => Promise<string | null>;
-  };
-  sound: {
-    selectFile: () => Promise<string | null>;
-  };
-  settings: {
-    getAll: () => Promise<{ success: boolean; settings: any }>;
-    update: (section: string, values: any) => Promise<{ success: boolean }>;
-    migrate: (data: string) => Promise<{ success: boolean }>;
-  };
-  devices: {
-    listAvailable: () => Promise<{ success: boolean; ports: any[]; error?: string }>;
-    listConnected: () => Promise<{ success: boolean; devices: any[] }>;
-    connect: (port: string, baudRate?: number) => Promise<{ success: boolean; deviceId?: string; error?: string }>;
-    disconnect: (deviceId: string) => Promise<{ success: boolean; error?: string }>;
-    onButtonPress: (callback: (buttonIndex: number) => void) => () => void;
-    onStatus: (callback: (status: { connected: boolean; deviceId: string }) => void) => () => void;
-  };
-  discord: {
-    getState: () => Promise<{ connected: boolean; mute: boolean; deaf: boolean }>;
-    onVoiceState: (callback: (state: { mute: boolean; deaf: boolean }) => void) => () => void;
-    onStatus: (callback: (status: { connected: boolean }) => void) => () => void;
-  };
-  profiles: {
-    getAll: () => Promise<{ profiles: any[]; activeId: string }>;
-    setActive: (id: string) => Promise<{ success: boolean }>;
-    create: (name: string) => Promise<{ success: boolean; profile: any }>;
-    delete: (id: string) => Promise<{ success: boolean }>;
-    rename: (id: string, name: string) => Promise<{ success: boolean }>;
-    duplicate: (id: string) => Promise<{ success: boolean; profile: any }>;
-    assignAction: (profileId: string, pageId: string | null, position: number, action: any) => Promise<{ success: boolean }>;
-    removeAction: (profileId: string, pageId: string | null, position: number) => Promise<{ success: boolean }>;
-    moveButton: (profileId: string, pageId: string | null, from: number, to: number) => Promise<{ success: boolean }>;
-    createFolder: (profileId: string, pageId: string | null, position: number, name: string, icon: string) => Promise<{ success: boolean; folderId: string }>;
-    deleteFolder: (profileId: string, folderId: string) => Promise<{ success: boolean }>;
-    migrate: (data: string) => Promise<{ success: boolean }>;
-    export: (data: string) => Promise<{ success: boolean; filePath?: string; error?: string }>;
-    import: () => Promise<{ success: boolean; data?: string; error?: string }>;
-  };
+export type { DeckForgeAPI };
+
+/**
+ * Suscribe un listener de ipcRenderer y devuelve su función de baja.
+ * Centralizado para que ningún canal se quede sin limpiar.
+ */
+function subscribe<T>(channel: string, callback: (payload: T) => void): () => void {
+  const handler = (_event: Electron.IpcRendererEvent, payload: T) => callback(payload);
+  ipcRenderer.on(channel, handler);
+  return () => ipcRenderer.removeListener(channel, handler);
 }
 
 const api: DeckForgeAPI = {
@@ -76,35 +36,23 @@ const api: DeckForgeAPI = {
     getAll: () => ipcRenderer.invoke('settings:getAll'),
     update: (section, values) => ipcRenderer.invoke('settings:update', section, values),
     migrate: (data) => ipcRenderer.invoke('settings:migrate', data),
+    nanoleafPair: (ip) => ipcRenderer.invoke('nanoleaf:pair', ip),
+    discordConnect: (clientSecret) => ipcRenderer.invoke('discord:connect', { clientSecret }),
   },
   devices: {
     listAvailable: () => ipcRenderer.invoke('devices:listAvailable'),
     listConnected: () => ipcRenderer.invoke('devices:listConnected'),
     connect: (port, baudRate) => ipcRenderer.invoke('devices:connect', port, baudRate),
     disconnect: (deviceId) => ipcRenderer.invoke('devices:disconnect', deviceId),
-    onButtonPress: (callback) => {
-      const handler = (_event: any, buttonIndex: number) => callback(buttonIndex);
-      ipcRenderer.on('device:buttonPress', handler);
-      return () => ipcRenderer.removeListener('device:buttonPress', handler);
-    },
-    onStatus: (callback) => {
-      const handler = (_event: any, status: any) => callback(status);
-      ipcRenderer.on('device:status', handler);
-      return () => ipcRenderer.removeListener('device:status', handler);
-    },
+    // Se reenvía el evento completo: el `status` que calcula el Core es lo que
+    // permite al grid distinguir éxito, error, hueco vacío o navegación.
+    onButtonPress: (callback) => subscribe<DeviceButtonEvent>('device:buttonFeedback', callback),
+    onStatus: (callback) => subscribe<DeviceStatusEvent>('device:status', callback),
   },
   discord: {
     getState: () => ipcRenderer.invoke('discord:getState'),
-    onVoiceState: (callback) => {
-      const handler = (_event: any, state: any) => callback(state);
-      ipcRenderer.on('discord:voiceState', handler);
-      return () => ipcRenderer.removeListener('discord:voiceState', handler);
-    },
-    onStatus: (callback) => {
-      const handler = (_event: any, status: any) => callback(status);
-      ipcRenderer.on('discord:status', handler);
-      return () => ipcRenderer.removeListener('discord:status', handler);
-    },
+    onVoiceState: (callback) => subscribe<{ mute: boolean; deaf: boolean }>('discord:voiceState', callback),
+    onStatus: (callback) => subscribe<{ connected: boolean }>('discord:status', callback),
   },
   profiles: {
     getAll: () => ipcRenderer.invoke('profiles:getAll'),
@@ -121,6 +69,7 @@ const api: DeckForgeAPI = {
     migrate: (data) => ipcRenderer.invoke('profiles:migrate', data),
     export: (data) => ipcRenderer.invoke('profiles:export', data),
     import: () => ipcRenderer.invoke('profiles:import'),
+    importProfiles: (data) => ipcRenderer.invoke('profiles:importProfiles', data),
   },
 };
 

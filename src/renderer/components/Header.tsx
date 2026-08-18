@@ -4,7 +4,7 @@ import { ContextMenu, ContextMenuItem } from './ContextMenu';
 import { SettingsModal } from './SettingsModal';
 
 export function Header() {
-  const { profiles, activeProfile, createProfile, deleteProfile, renameProfile, switchProfile } =
+  const { profiles, activeProfile, createProfile, deleteProfile, renameProfile, switchProfile, refresh } =
     useProfiles();
   const [isCreating, setIsCreating] = useState(false);
   const [newName, setNewName] = useState('');
@@ -34,8 +34,9 @@ export function Header() {
 
   const handleDuplicate = async (profileId: string) => {
     if (!window.deckforge) return;
+    // Refrescar en vez de recargar la ventana, que descartaba todo el estado.
     await window.deckforge.profiles.duplicate(profileId);
-    window.location.reload();
+    await refresh();
   };
 
   const handleRename = (profileId: string) => {

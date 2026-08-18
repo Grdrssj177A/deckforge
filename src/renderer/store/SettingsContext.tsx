@@ -1,4 +1,4 @@
-import { createContext, useContext, useState, useCallback, useEffect } from 'react';
+import { createContext, useContext, useState, useCallback, useEffect, useMemo } from 'react';
 
 export interface PluginSettings {
   nanoleaf: { ip: string; token: string };
@@ -16,9 +16,17 @@ const DEFAULT_SETTINGS: PluginSettings = {
   audio: { outputDevice: '' },
 };
 
+export interface SettingsUpdateResult {
+  success: boolean;
+  error?: string;
+}
+
 interface SettingsContextValue {
   settings: PluginSettings;
-  updateSettings: (section: keyof PluginSettings, values: Partial<PluginSettings[keyof PluginSettings]>) => void;
+  updateSettings: (
+    section: keyof PluginSettings,
+    values: Partial<PluginSettings[keyof PluginSettings]>
+  ) => Promise<SettingsUpdateResult>;
   getPluginDefaults: (pluginId: string) => Record<string, string>;
 }
 
@@ -64,30 +72,41 @@ export function SettingsProvider({ children }: { children: React.ReactNode }) {
     }
   }, []);
 
-  const updateSettings = useCallback(async (section: keyof PluginSettings, values: Partial<PluginSettings[keyof PluginSettings]>) => {
+  /**
+   * Persiste primero y actualiza el estado local solo si el main lo aceptó.
+   * Antes se aplicaba de forma optimista y un rechazo del main dejaba la UI
+   * mostrando valores que no estaban guardados.
+   */
+  const updateSettings = useCallback(async (
+    section: keyof PluginSettings,
+    values: Partial<PluginSettings[keyof PluginSettings]>
+  ): Promise<SettingsUpdateResult> => {
+    if (window.deckforge) {
+      const res = await window.deckforge.settings.update(section, values as Record<string, unknown>);
+      if (!res.success) return { success: false, error: res.error };
+    }
     setSettings((prev) => ({
       ...prev,
       [section]: { ...prev[section], ...values },
     }));
-    if (window.deckforge) {
-      await window.deckforge.settings.update(section, values);
-    }
+    return { success: true };
   }, []);
 
   const getPluginDefaults = useCallback((pluginId: string): Record<string, string> => {
     switch (pluginId) {
-      case 'nanoleaf': return { ip: settings.nanoleaf.ip, token: settings.nanoleaf.token };
-      case 'obs': return { obsHost: settings.obs.host, obsPassword: settings.obs.password };
-      case 'discord': return { clientSecret: settings.discord.clientSecret };
+      case 'nanoleaf': return { ip: settings.nanoleaf.ip, tokenConfigured: settings.nanoleaf.token ? 'true' : 'false' };
+      case 'obs': return { obsHost: settings.obs.host, passwordConfigured: settings.obs.password ? 'true' : 'false' };
+      case 'discord': return { secretConfigured: settings.discord.clientSecret ? 'true' : 'false' };
       default: return {};
     }
   }, [settings]);
 
-  return (
-    <SettingsCtx.Provider value={{ settings, updateSettings, getPluginDefaults }}>
-      {children}
-    </SettingsCtx.Provider>
+  const value = useMemo<SettingsContextValue>(
+    () => ({ settings, updateSettings, getPluginDefaults }),
+    [settings, updateSettings, getPluginDefaults]
   );
+
+  return <SettingsCtx.Provider value={value}>{children}</SettingsCtx.Provider>;
 }
 
 export function useSettings(): SettingsContextValue {

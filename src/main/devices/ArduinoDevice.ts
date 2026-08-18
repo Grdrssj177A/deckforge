@@ -1,6 +1,7 @@
 import { DeckDevice, DeviceInfo } from './DeckDevice';
 import { SerialTransport } from '../transports/SerialTransport';
 import { TransportConfig } from '../transports/Transport';
+import { MAX_BUTTONS } from '../../shared/types/profiles';
 import { createLogger } from '../lib/logger';
 
 const log = createLogger('ArduinoDevice');
@@ -64,8 +65,12 @@ export class ArduinoDevice implements DeckDevice {
   private handleData(line: string): void {
     if (line.startsWith('BTN:')) {
       const buttonId = parseInt(line.slice(4), 10);
-      if (!isNaN(buttonId)) {
+      // El dispositivo es una fuente externa: se descartan índices absurdos
+      // antes de propagarlos al Core.
+      if (Number.isInteger(buttonId) && buttonId >= 0 && buttonId < MAX_BUTTONS) {
         this.onButtonPress?.(buttonId);
+      } else {
+        log.warn(`Ignoring out-of-range button index: "${line}"`);
       }
     } else if (line === 'DECKFORGE:READY') {
       log.info('Arduino ready');

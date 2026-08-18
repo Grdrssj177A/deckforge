@@ -1,15 +1,22 @@
 /**
  * Discord RPC Client via local IPC named pipe
- * 
+ *
  * Connects to Discord's local RPC server to control voice settings.
  * Handles the full OAuth2 authorization flow for RPC access.
- * 
+ *
  * Protocol: \\.\pipe\discord-ipc-{0-9}
  * Framing: [opcode:u32le][length:u32le][json payload]
+ *
+ * Nota de seguridad: en Windows cualquier proceso local puede ocupar ese pipe
+ * antes que Discord. Por eso el parser acota el tamaño de trama y nunca crece
+ * sin límite con lo que le manden.
  */
 
 import * as net from 'net';
 import { EventEmitter } from 'events';
+import { createLogger } from './lib/logger';
+
+const log = createLogger('DiscordRPC');
 
 enum Opcode {
   HANDSHAKE = 0,
@@ -19,6 +26,14 @@ enum Opcode {
   PONG = 4,
 }
 
+/** Tamaño máximo de una trama. Discord envía payloads pequeños. */
+const MAX_FRAME_BYTES = 1024 * 1024;
+/** Tiempo para completar conexión + handshake de un pipe concreto. */
+const HANDSHAKE_TIMEOUT_MS = 1500;
+/** Tiempo de espera de la respuesta a un comando. */
+const COMMAND_TIMEOUT_MS = 10000;
+const PIPE_RANGE = 10;
+
 export interface VoiceState {
   mute: boolean;
   deaf: boolean;
@@ -27,6 +42,7 @@ export interface VoiceState {
 interface PendingCallback {
   resolve: (data: any) => void;
   reject: (err: Error) => void;
+  timer: NodeJS.Timeout;
 }
 
 export class DiscordRPC extends EventEmitter {
@@ -60,7 +76,7 @@ export class DiscordRPC extends EventEmitter {
    * After connect, you need to call authorize() or authenticate() with a token.
    */
   async connect(): Promise<boolean> {
-    for (let i = 0; i <= 9; i++) {
+    for (let i = 0; i < PIPE_RANGE; i++) {
       try {
         await this.tryConnect(i);
         return true;
@@ -75,60 +91,74 @@ export class DiscordRPC extends EventEmitter {
     return new Promise((resolve, reject) => {
       const pipePath = `\\\\?\\pipe\\discord-ipc-${pipeNumber}`;
       const socket = net.createConnection(pipePath);
-      let resolved = false;
 
-      const timeout = setTimeout(() => {
-        if (!resolved) {
-          resolved = true;
-          socket.destroy();
-          reject(new Error('Connection timeout'));
-        }
-      }, 5000);
+      let settled = false;
+      let timer: NodeJS.Timeout | null = null;
 
-      socket.on('connect', () => {
+      // Se desengancha todo en cualquier salida: antes el listener de '_ready'
+      // quedaba registrado en cada intento fallido y se acumulaba.
+      const detach = () => {
+        if (timer) { clearTimeout(timer); timer = null; }
+        this.removeListener('_ready', onReady);
+        socket.removeListener('connect', onConnect);
+        socket.removeListener('error', onError);
+      };
+
+      const succeed = () => {
+        if (settled) return;
+        settled = true;
+        detach();
+        this.connected = true;
+        resolve();
+      };
+
+      const failWith = (err: Error) => {
+        if (settled) return;
+        settled = true;
+        detach();
+        // Este socket no sirve: se cierra para no dejarlo abierto.
+        if (this.socket === socket) this.socket = null;
+        try { socket.removeAllListeners(); socket.destroy(); } catch { /* ignore */ }
+        reject(err);
+      };
+
+      function onReady() { succeed(); }
+      const onError = (err: Error) => failWith(err);
+      const onConnect = () => {
         this.socket = socket;
         this.buffer = Buffer.alloc(0);
-        this.setupListeners();
-        // Send handshake
+        this.setupListeners(socket);
         this.sendPacket(Opcode.HANDSHAKE, { v: 1, client_id: this.clientId });
-      });
+      };
 
-      socket.on('error', (err) => {
-        if (!resolved) {
-          resolved = true;
-          clearTimeout(timeout);
-          reject(err);
-        }
-      });
-
-      this.once('_ready', () => {
-        if (!resolved) {
-          resolved = true;
-          clearTimeout(timeout);
-          this.connected = true;
-          resolve();
-        }
-      });
+      timer = setTimeout(() => failWith(new Error('Connection timeout')), HANDSHAKE_TIMEOUT_MS);
+      socket.once('connect', onConnect);
+      socket.on('error', onError);
+      this.once('_ready', onReady);
     });
   }
 
-  private setupListeners(): void {
-    if (!this.socket) return;
-
-    this.socket.on('data', (chunk) => {
+  private setupListeners(socket: net.Socket): void {
+    socket.on('data', (chunk) => {
+      if (this.socket !== socket) return;
       this.buffer = Buffer.concat([this.buffer, chunk]);
       this.processBuffer();
     });
 
-    this.socket.on('close', () => {
+    socket.on('close', () => {
+      // Un socket descartado durante los intentos de conexión no debe emitir
+      // 'disconnected' ni pisar el socket activo.
+      if (this.socket !== socket) return;
+      this.socket = null;
+      const wasConnected = this.connected;
       this.connected = false;
       this.authenticated = false;
-      this.socket = null;
-      this.emit('disconnected');
+      this.rejectPending(new Error('Disconnected'));
+      if (wasConnected) this.emit('disconnected');
     });
 
-    this.socket.on('error', (err) => {
-      console.error('[Discord RPC] Socket error:', err.message);
+    socket.on('error', (err) => {
+      log.error(`Socket error: ${err.message}`);
     });
   }
 
@@ -137,10 +167,18 @@ export class DiscordRPC extends EventEmitter {
       const opcode = this.buffer.readUInt32LE(0);
       const length = this.buffer.readUInt32LE(4);
 
+      // La longitud la controla el otro extremo del pipe: sin este límite, un
+      // valor grande hacía crecer el buffer indefinidamente.
+      if (length > MAX_FRAME_BYTES) {
+        log.error(`Frame length ${length} exceeds limit; dropping connection`);
+        this.disconnect();
+        return;
+      }
+
       if (this.buffer.length < 8 + length) break;
 
-      const payload = this.buffer.slice(8, 8 + length).toString('utf-8');
-      this.buffer = this.buffer.slice(8 + length);
+      const payload = this.buffer.subarray(8, 8 + length).toString('utf-8');
+      this.buffer = this.buffer.subarray(8 + length);
 
       this.handlePacket(opcode, payload);
     }
@@ -185,21 +223,16 @@ export class DiscordRPC extends EventEmitter {
 
     // SUBSCRIBE response — also comes with evt field
     if (cmd === 'SUBSCRIBE' && nonce && this.pendingCallbacks.has(nonce)) {
-      const cb = this.pendingCallbacks.get(nonce)!;
-      this.pendingCallbacks.delete(nonce);
-      cb.resolve(payload);
+      this.settlePending(nonce, payload, null);
       return;
     }
 
     // Command responses
     if (nonce && this.pendingCallbacks.has(nonce)) {
-      const cb = this.pendingCallbacks.get(nonce)!;
-      this.pendingCallbacks.delete(nonce);
-
       if (evt === 'ERROR') {
-        cb.reject(new Error(payload?.message || 'Discord RPC Error'));
+        this.settlePending(nonce, null, new Error(payload?.message || 'Discord RPC Error'));
       } else {
-        cb.resolve(payload);
+        this.settlePending(nonce, payload, null);
       }
       return;
     }
@@ -209,6 +242,24 @@ export class DiscordRPC extends EventEmitter {
       this.emit('_ready', payload);
     } else if (evt === 'VOICE_SETTINGS_UPDATE') {
       this.handleVoiceUpdate(payload);
+    }
+  }
+
+  /** Resuelve o rechaza una petición pendiente, limpiando siempre su timer. */
+  private settlePending(nonce: string, data: any, error: Error | null): void {
+    const cb = this.pendingCallbacks.get(nonce);
+    if (!cb) return;
+    this.pendingCallbacks.delete(nonce);
+    clearTimeout(cb.timer);
+    if (error) cb.reject(error); else cb.resolve(data);
+  }
+
+  private rejectPending(error: Error): void {
+    const pending = Array.from(this.pendingCallbacks.entries());
+    this.pendingCallbacks.clear();
+    for (const [, cb] of pending) {
+      clearTimeout(cb.timer);
+      cb.reject(error);
     }
   }
 
@@ -234,19 +285,21 @@ export class DiscordRPC extends EventEmitter {
     this.socket.write(Buffer.concat([header, buf]));
   }
 
-  private sendCommand(cmd: string, args: object = {}): Promise<any> {
+  /** Registra una petición pendiente con su timeout ya asociado. */
+  private request(frame: (nonce: string) => object): Promise<any> {
     return new Promise((resolve, reject) => {
       const id = String(++this.nonce);
-      this.pendingCallbacks.set(id, { resolve, reject });
-      this.sendPacket(Opcode.FRAME, { cmd, args, nonce: id });
-
-      setTimeout(() => {
-        if (this.pendingCallbacks.has(id)) {
-          this.pendingCallbacks.delete(id);
-          reject(new Error(`Command ${cmd} timed out`));
-        }
-      }, 10000);
+      const timer = setTimeout(() => {
+        this.pendingCallbacks.delete(id);
+        reject(new Error('Discord RPC request timed out'));
+      }, COMMAND_TIMEOUT_MS);
+      this.pendingCallbacks.set(id, { resolve, reject, timer });
+      this.sendPacket(Opcode.FRAME, frame(id));
     });
+  }
+
+  private sendCommand(cmd: string, args: object = {}): Promise<any> {
+    return this.request((nonce) => ({ cmd, args, nonce }));
   }
 
   /**
@@ -255,18 +308,7 @@ export class DiscordRPC extends EventEmitter {
    * (evt va a nivel top, no dentro de args)
    */
   private subscribe(event: string, args: object = {}): Promise<any> {
-    return new Promise((resolve, reject) => {
-      const id = String(++this.nonce);
-      this.pendingCallbacks.set(id, { resolve, reject });
-      this.sendPacket(Opcode.FRAME, { cmd: 'SUBSCRIBE', evt: event, args, nonce: id });
-
-      setTimeout(() => {
-        if (this.pendingCallbacks.has(id)) {
-          this.pendingCallbacks.delete(id);
-          reject(new Error(`Subscribe to ${event} timed out`));
-        }
-      }, 10000);
-    });
+    return this.request((nonce) => ({ cmd: 'SUBSCRIBE', evt: event, args, nonce }));
   }
 
   // ─── Authorization Flow ──────────────────────────────────────────────────
@@ -294,8 +336,6 @@ export class DiscordRPC extends EventEmitter {
   async exchangeCode(code: string): Promise<string> {
     if (!this.clientSecret) {
       // Sin client secret, no podemos hacer el exchange desde el cliente.
-      // Devolvemos el code para que se use con AUTHENTICATE directamente
-      // (Discord RPC acepta el code como token en algunos casos para apps locales)
       throw new Error('CLIENT_SECRET_REQUIRED');
     }
 
@@ -324,8 +364,18 @@ export class DiscordRPC extends EventEmitter {
 
       const req = https.request(options, (res) => {
         let data = '';
-        res.on('data', (chunk) => data += chunk);
+        let tooLarge = false;
+        res.on('data', (chunk) => {
+          if (tooLarge) return;
+          data += chunk;
+          if (data.length > 256 * 1024) {
+            tooLarge = true;
+            req.destroy();
+            reject(new Error('Token response too large'));
+          }
+        });
         res.on('end', () => {
+          if (tooLarge) return;
           try {
             const json = JSON.parse(data);
             if (json.access_token) {
@@ -436,27 +486,40 @@ export class DiscordRPC extends EventEmitter {
     return true;
   }
 
+  /**
+   * Invierte el mute leyendo el estado una sola vez.
+   * La suscripción a VOICE_SETTINGS_UPDATE mantiene `voiceState` al día, así
+   * que no hacen falta dos lecturas ni una espera artificial.
+   */
   async toggleMute(): Promise<VoiceState> {
-    await this.setMute(!this.voiceState.mute);
+    const current = await this.getVoiceSettings();
+    await this.setMute(!current.mute);
     return this.voiceState;
   }
 
   async toggleDeaf(): Promise<VoiceState> {
-    await this.setDeaf(!this.voiceState.deaf);
+    const current = await this.getVoiceSettings();
+    await this.setDeaf(!current.deaf);
     return this.voiceState;
   }
 
   disconnect(): void {
-    if (this.socket) {
-      try { this.socket.destroy(); } catch { /* ignore */ }
-      this.socket = null;
-    }
+    const socket = this.socket;
+    this.socket = null;
+
+    const wasConnected = this.connected;
     this.connected = false;
     this.authenticated = false;
     this.buffer = Buffer.alloc(0);
-    this.pendingCallbacks.forEach(cb => cb.reject(new Error('Disconnected')));
-    this.pendingCallbacks.clear();
-    this.emit('disconnected');
+
+    if (socket) {
+      // Se quitan los listeners antes de destruir para que 'close' no emita un
+      // segundo 'disconnected'.
+      try { socket.removeAllListeners(); socket.destroy(); } catch { /* ignore */ }
+    }
+
+    this.rejectPending(new Error('Disconnected'));
+    if (wasConnected) this.emit('disconnected');
   }
 
   getAccessToken(): string | null {

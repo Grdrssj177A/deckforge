@@ -11,15 +11,81 @@ interface SettingsModalProps {
 
 export function SettingsModal({ onClose }: SettingsModalProps) {
   const { settings, updateSettings } = useSettings();
-  const { profiles } = useProfiles();
+  const { profiles, refresh } = useProfiles();
   const [local, setLocal] = useState(settings);
+  const [saveError, setSaveError] = useState('');
+  const [importError, setImportError] = useState('');
+  const [saving, setSaving] = useState(false);
 
-  const handleSave = () => {
-    updateSettings('nanoleaf', local.nanoleaf);
-    updateSettings('obs', local.obs);
-    updateSettings('discord', local.discord);
-    updateSettings('grid', local.grid);
-    onClose();
+  /**
+   * Guarda sección por sección y solo cierra si todo se aceptó.
+   * El main valida rangos y formatos, así que un guardado puede fallar
+   * legítimamente y el usuario tiene que verlo.
+   */
+  const handleSave = async () => {
+    setSaving(true);
+    setSaveError('');
+    try {
+      const sections: Array<[Parameters<typeof updateSettings>[0], any]> = [
+        ['nanoleaf', local.nanoleaf],
+        ['obs', local.obs],
+        ['discord', local.discord],
+        ['grid', local.grid],
+      ];
+      const errors: string[] = [];
+      for (const [section, values] of sections) {
+        const res = await updateSettings(section, values);
+        if (!res.success) errors.push(res.error || `No se pudo guardar "${section}"`);
+      }
+      if (errors.length > 0) {
+        setSaveError(errors.join(' · '));
+        return;
+      }
+      onClose();
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const [pairingNanoleaf, setPairingNanoleaf] = useState(false);
+  const [nanoleafPairResult, setNanoleafPairResult] = useState<string | null>(null);
+
+  const handleNanoleafPair = async () => {
+    if (!local.nanoleaf.ip) return;
+    setPairingNanoleaf(true);
+    setNanoleafPairResult(null);
+    try {
+      const result = await window.deckforge!.settings.nanoleafPair(local.nanoleaf.ip);
+      if (result.success && result.token) {
+        setNanoleafPairResult(result.token);
+        setLocal({ ...local, nanoleaf: { ...local.nanoleaf, token: result.token } });
+      } else {
+        setNanoleafPairResult(`Error: ${result.error || 'Fallo al emparejar'}`);
+      }
+    } catch (e) {
+      setNanoleafPairResult('Error de conexión');
+    }
+    setPairingNanoleaf(false);
+  };
+
+  const [connectingDiscord, setConnectingDiscord] = useState(false);
+  const [discordStatus, setDiscordStatus] = useState('');
+
+  const handleDiscordConnect = async () => {
+    setConnectingDiscord(true);
+    setDiscordStatus('');
+    try {
+      // No enviar el secret enmascarado — el main ya lo tiene en safeStorage
+      const result = await window.deckforge!.settings.discordConnect('');
+      if (result.success) {
+        setDiscordStatus('Conectado ✓');
+      } else {
+        setDiscordStatus(`Error: ${result.error || 'Fallo'}`);
+      }
+    } catch {
+      setDiscordStatus('Error de conexión');
+    }
+    setConnectingDiscord(false);
   };
 
   const [exportSelection, setExportSelection] = useState<Set<string>>(new Set());
@@ -54,69 +120,58 @@ export function SettingsModal({ onClose }: SettingsModalProps) {
     }
   };
 
+  /**
+   * Importa en una sola llamada. Antes se recreaba el perfil botón a botón
+   * (una IPC y una reescritura completa del archivo por botón) y sin validar
+   * nada de lo que traía el JSON.
+   */
   const handleImport = async () => {
     if (!window.deckforge) return;
-    const result = await window.deckforge.profiles.import();
-    if (result.success && result.data) {
-      try {
-        const parsed = JSON.parse(result.data);
-        const toImport = Array.isArray(parsed) ? parsed : [parsed];
-        const imported: { id: string; name: string }[] = [];
+    setImportError('');
 
-        for (const p of toImport) {
-          // Usar IPC para importar al ProfileManager (no localStorage)
-          const res = await window.deckforge.profiles.create(p.name + ' (importado)');
-          if (res.success && res.profile) {
-            // Ahora asignar las acciones del perfil importado
-            // Forma simple: usar assignAction para cada botón que tenga acción
-            const profileId = res.profile.id;
-            for (const btn of p.buttons || []) {
-              if (btn.action) {
-                await window.deckforge.profiles.assignAction(profileId, null, btn.position, btn.action);
-              }
-              if (btn.folderId) {
-                // Recrear carpetas
-                const page = (p.pages || []).find((pg: any) => pg.id === btn.folderId);
-                if (page) {
-                  const folderRes = await window.deckforge.profiles.createFolder(profileId, null, btn.position, page.name, page.icon);
-                  // Asignar acciones dentro de la carpeta
-                  if (folderRes.success && folderRes.folderId) {
-                    for (const subBtn of page.buttons || []) {
-                      if (subBtn.action) {
-                        await window.deckforge.profiles.assignAction(profileId, folderRes.folderId, subBtn.position, subBtn.action);
-                      }
-                    }
-                  }
-                }
-              }
-            }
-            imported.push({ id: profileId, name: p.name + ' (importado)' });
-          }
-        }
-
-        setImportedProfiles(imported);
-      } catch {
-        log.error('Invalid profile format');
-      }
+    const picked = await window.deckforge.profiles.import();
+    if (!picked.success || !picked.data) {
+      if (picked.error && picked.error !== 'Cancelado') setImportError(picked.error);
+      return;
     }
+
+    const result = await window.deckforge.profiles.importProfiles(picked.data);
+    if (!result.success) {
+      setImportError(result.error || 'No se pudo importar el archivo');
+      log.error(`Import failed: ${result.error}`);
+      return;
+    }
+
+    await refresh();
+    log.info(`Imported ${result.imported ?? 0} profile(s)`);
+
+    // Los perfiles importados conservan su nombre; se ofrece renombrarlos.
+    const known = new Set(profiles.map((p) => p.id));
+    const fresh = (await window.deckforge.profiles.getAll()).profiles
+      .filter((p) => !known.has(p.id))
+      .map((p) => ({ id: p.id, name: p.name }));
+    setImportedProfiles(fresh);
   };
 
   const handleRenameChange = (id: string, newName: string) => {
     setImportedProfiles((prev) => prev.map((p) => p.id === id ? { ...p, name: newName } : p));
   };
 
+  // Antes ambos flujos hacían window.location.reload(), que descarta todo el
+  // estado de la UI. Basta con refrescar los perfiles desde el main.
   const handleRenameConfirm = async () => {
     if (!window.deckforge) return;
     for (const p of importedProfiles) {
-      await window.deckforge.profiles.rename(p.id, p.name);
+      const res = await window.deckforge.profiles.rename(p.id, p.name);
+      if (!res.success) setImportError(res.error || 'No se pudo renombrar un perfil');
     }
     setImportedProfiles([]);
-    window.location.reload();
+    await refresh();
   };
 
-  const handleRenameSkip = () => {
+  const handleRenameSkip = async () => {
     setImportedProfiles([]);
-    window.location.reload();
+    await refresh();
   };
 
   return (
@@ -155,6 +210,17 @@ export function SettingsModal({ onClose }: SettingsModalProps) {
                 onChange={(e) => setLocal({ ...local, nanoleaf: { ...local.nanoleaf, token: e.target.value } })}
                 placeholder="Tu auth token"
               />
+            </div>
+            <div className="modal-field">
+              <p className="settings-hint">Mantén pulsado el botón del panel 5-7 segundos y pulsa "Emparejar".</p>
+              <button type="button" className="modal-btn-browse" onClick={handleNanoleafPair} disabled={pairingNanoleaf || !local.nanoleaf.ip}>
+                {pairingNanoleaf ? 'Emparejando...' : '🔑 Emparejar Nanoleaf'}
+              </button>
+              {nanoleafPairResult && (
+                <div className={`settings-hint ${nanoleafPairResult.startsWith('Error') ? 'settings-error' : 'settings-success'}`}>
+                  {nanoleafPairResult}
+                </div>
+              )}
             </div>
           </div>
 
@@ -209,6 +275,14 @@ export function SettingsModal({ onClose }: SettingsModalProps) {
             <p className="settings-hint">
               La primera vez que conectes, Discord te pedirá autorizar DeckForge. Después se reconecta automáticamente.
             </p>
+            <button type="button" className="modal-btn-browse" onClick={handleDiscordConnect} disabled={connectingDiscord}>
+              {connectingDiscord ? 'Conectando...' : '🔗 Conectar Discord'}
+            </button>
+            {discordStatus && (
+              <div className={`settings-hint ${discordStatus.startsWith('Error') ? 'settings-error' : 'settings-success'}`}>
+                {discordStatus}
+              </div>
+            )}
           </div>
 
           {/* Grid */}
@@ -261,6 +335,9 @@ export function SettingsModal({ onClose }: SettingsModalProps) {
               <button type="button" className="modal-btn-browse" onClick={handleExportOpen}>📤 Exportar</button>
               <button type="button" className="modal-btn-browse" onClick={handleImport}>📥 Importar</button>
             </div>
+            {importError && (
+              <div className="settings-hint settings-error" role="alert">{importError}</div>
+            )}
           </div>
         </div>
 
@@ -317,8 +394,13 @@ export function SettingsModal({ onClose }: SettingsModalProps) {
         )}
 
         <footer className="modal-footer">
-          <button type="button" className="modal-btn cancel" onClick={onClose}>Cancelar</button>
-          <button type="button" className="modal-btn save" onClick={handleSave}>Guardar</button>
+          {saveError && (
+            <div className="settings-hint settings-error settings-save-error" role="alert">{saveError}</div>
+          )}
+          <button type="button" className="modal-btn cancel" onClick={onClose} disabled={saving}>Cancelar</button>
+          <button type="button" className="modal-btn save" onClick={handleSave} disabled={saving}>
+            {saving ? 'Guardando...' : 'Guardar'}
+          </button>
         </footer>
       </div>
     </div>

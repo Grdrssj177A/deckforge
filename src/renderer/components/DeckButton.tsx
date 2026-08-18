@@ -1,22 +1,36 @@
-import { useState, useRef } from 'react';
+import { memo, useMemo, useState, useRef } from 'react';
 import { ButtonSlot, Action, ActionConfig } from '@/types';
-import { useDrag } from '@/store/DragContext';
+import { useDragActions } from '@/store/DragContext';
 import { useProfiles } from '@/store/ProfileContext';
-import { usePlugins } from '@/store/PluginContext';
+import { usePlugins, ExecuteTarget } from '@/store/PluginContext';
 import { ConfigModal } from './ConfigModal';
 import { ContextMenu, ContextMenuItem } from './ContextMenu';
 
 interface DeckButtonProps {
   slot: ButtonSlot;
   serialFeedback?: string;
+  /**
+   * Cambia cuando un icono dinámico (soundboard, Discord) puede haber cambiado.
+   * Es lo que permite memoizar el botón sin perder esas actualizaciones.
+   */
+  iconRevision?: number;
 }
 
 const DRAG_TYPE_BUTTON = 'deckforge/button';
 
-export function DeckButton({ slot, serialFeedback }: DeckButtonProps) {
-  const { dragging, endDrag, getDraggedAction } = useDrag();
-  const { assignAction, removeAction, moveButton, navigateToPage, createFolder, deleteFolder } = useProfiles();
-  const { executeAction, isActionBusy, getDynamicIcon } = usePlugins();
+function DeckButtonImpl({ slot, serialFeedback }: DeckButtonProps) {
+  const { endDrag, getDraggedAction } = useDragActions();
+  const {
+    assignAction, removeAction, moveButton, navigateToPage, createFolder, deleteFolder,
+    currentPageId, activeProfile,
+  } = useProfiles();
+  const { executeAction, getDynamicIcon } = usePlugins();
+
+  /** Identidad del botón, necesaria para que el anti-spam del Core sea por botón. */
+  const target = useMemo<ExecuteTarget>(
+    () => ({ position: slot.position, pageId: currentPageId, profileId: activeProfile.id }),
+    [slot.position, currentPageId, activeProfile.id]
+  );
   const [showConfig, setShowConfig] = useState(false);
   const [pendingAction, setPendingAction] = useState<Action | null>(null);
   const [feedback, setFeedback] = useState<'success' | 'error' | null>(null);
@@ -137,7 +151,7 @@ export function DeckButton({ slot, serialFeedback }: DeckButtonProps) {
       return;
     }
 
-    if (!slot.action || isActionBusy(slot.action.id)) return;
+    if (!slot.action) return;
 
     if (clickTimeout.current) {
       clearTimeout(clickTimeout.current);
@@ -146,7 +160,7 @@ export function DeckButton({ slot, serialFeedback }: DeckButtonProps) {
 
     clickTimeout.current = setTimeout(async () => {
       try {
-        await executeAction(slot.action!);
+        await executeAction(slot.action!, target);
         setFeedback('success');
       } catch {
         setFeedback('error');
@@ -175,8 +189,8 @@ export function DeckButton({ slot, serialFeedback }: DeckButtonProps) {
       items.push({
         label: 'Ejecutar', icon: '▶️',
         action: async () => {
-          if (!slot.action || isActionBusy(slot.action.id)) return;
-          try { await executeAction(slot.action); setFeedback('success'); } catch { setFeedback('error'); }
+          if (!slot.action) return;
+          try { await executeAction(slot.action, target); setFeedback('success'); } catch { setFeedback('error'); }
           setTimeout(() => setFeedback(null), 600);
         },
       });
@@ -230,10 +244,12 @@ export function DeckButton({ slot, serialFeedback }: DeckButtonProps) {
     return <span className="deck-button-empty">+</span>;
   };
 
+  // 'drop-target' ya no se aplica aquí: lo activa el contenedor del grid via
+  // `.deck-grid.dragging .deck-button`, para no re-renderizar cada botón al
+  // empezar un arrastre.
   const buttonClass = [
     'deck-button',
     slot.action ? 'has-action' : isFolder ? 'has-folder' : 'empty',
-    dragging ? 'drop-target' : '',
     feedbackClass,
     dragOverClass,
     indicatorClass,
@@ -286,3 +302,10 @@ export function DeckButton({ slot, serialFeedback }: DeckButtonProps) {
     </>
   );
 }
+
+/**
+ * Memoizado: el grid renderiza hasta 36 instancias y los valores de contexto
+ * ya son estables, así que solo se re-renderiza el botón cuyo slot o feedback
+ * cambia realmente.
+ */
+export const DeckButton = memo(DeckButtonImpl);

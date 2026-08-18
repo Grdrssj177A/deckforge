@@ -1,6 +1,12 @@
-# Plan de pruebas — Refactor Core (PluginManager + ActionManager)
+# Plan de pruebas — Refactor Core + endurecimiento
 
-Después de cada paso del refactor, testear los puntos marcados.
+Después de cada paso, testear los puntos marcados.
+
+No hay tests automatizados (ver TODO #8), así que este checklist **es** la suite de
+regresión del proyecto. `npm run build` solo garantiza que compila y empaqueta.
+
+- **Pasos A y B**: refactor Core (PluginManager + ActionManager). Completado.
+- **Paso C**: pasada de seguridad y robustez. Sin verificar en GUI todavía.
 
 ---
 
@@ -69,7 +75,9 @@ Después de cada paso del refactor, testear los puntos marcados.
 
 ### Anti-spam
 - [ ] Pulsar el mismo botón muy rápido → solo se ejecuta una vez (cooldown 200ms)
-- [ ] Pulsar dos botones diferentes rápido → ambos se ejecutan
+- [ ] Pulsar dos botones diferentes rápido → **ambos se ejecutan** (esto estaba roto: todos
+      los botones de la UI compartían la clave de cooldown)
+- [ ] Mismo slot en dos dispositivos distintos (virtual + Arduino) → cooldowns independientes
 
 ### Iconos dinámicos
 - [ ] Discord mute → icono cambia
@@ -93,10 +101,98 @@ Después de cada paso del refactor, testear los puntos marcados.
 
 ---
 
+## Paso C: endurecimiento de seguridad y robustez
+
+Cambios de comportamiento visibles al usuario, más las rutas de fallo que antes eran
+silenciosas. Ver [ARCHITECTURE.md → Límite de confianza](ARCHITECTURE.md#límite-de-confianza).
+
+### Arranque y cierre
+- [ ] La app arranca y el grid aparece (los handlers IPC se registran antes de la ventana)
+- [ ] Con el build empaquetado, DevTools **no** se abre solo
+- [ ] Cerrar la app con un Arduino conectado → el puerto se libera (se puede reconectar
+      desde otra app sin reiniciar)
+- [ ] Si `robotjs` no compila: la app arranca igual y solo fallan hotkeys/volumen
+
+### Secretos (regresión importante)
+- [ ] Configurar token de Nanoleaf → guardar → reabrir Settings: se ve `••••••••`
+- [ ] Pulsar **Guardar** sin tocar nada → las acciones de Nanoleaf siguen funcionando
+      (antes esto sobrescribía el token con la máscara y las rompía)
+- [ ] Igual con la contraseña de OBS y el client secret de Discord
+- [ ] Borrar el campo del token y guardar → el secreto se borra de verdad
+
+### Validación de entrada
+- [ ] `Open URL` con `https://...` → abre el navegador
+- [ ] `Open URL` con `file:///C:/Windows/System32/cmd.exe` → **rechazado** con mensaje
+- [ ] `Open URL` vacía o mal formada → mensaje de error claro, no un fallo silencioso
+- [ ] Nanoleaf con IP pública (ej. `8.8.8.8`) → rechazada al guardar
+- [ ] Nanoleaf con IP de LAN (`192.168.x.x`) → aceptada
+- [ ] Grid: no se pueden guardar valores fuera de 2..6
+
+### Ejecutar aplicaciones (nuevo flujo)
+- [ ] `Open App` eligiendo el ejecutable con **Explorar** → abre sin preguntar nada
+- [ ] El diálogo de `Open App` muestra ejecutables, no solo archivos de audio
+- [ ] Editar la ruta a mano / importar un perfil ajeno → al pulsar, aparece un diálogo
+      nativo con la ruta completa
+- [ ] Cancelar ese diálogo → no se ejecuta nada, el botón marca error
+- [ ] Aceptar → se ejecuta, y la **segunda** vez ya no pregunta
+- [ ] Reiniciar la app → sigue sin preguntar (persistido en `trusted-paths.json`)
+
+### Screenshot
+- [ ] Formato PNG y JPG → archivo válido, se abre la carpeta
+- [ ] Carpeta destino vacía → va al Escritorio
+- [ ] Con carpeta destino personalizada → se crea si no existe
+- [ ] La captura no está recortada por la barra de tareas y se ve nítida en pantallas HiDPI
+- [ ] Modo "Ventana activa" → captura pantalla completa (limitación conocida, no un fallo)
+
+### Perfiles: errores visibles
+- [ ] Importar un JSON válido → los perfiles aparecen y se ofrece renombrarlos
+- [ ] Importar un JSON corrupto o que no sea de DeckForge → mensaje de error, sin perfiles basura
+- [ ] Importar un perfil con carpetas → las carpetas y sus acciones se conservan
+- [ ] Importar es rápido (una sola escritura, no una por botón)
+- [ ] Duplicar/renombrar/importar **no** recarga la ventana ni resetea la vista
+- [ ] Con `profiles.json` en solo-lectura: al asignar una acción aparece un aviso de error
+      (antes se decía "guardado" y se perdía el cambio)
+
+### Perfil activo y hardware
+- [ ] Cambiar de perfil en la UI → el botón físico ejecuta las acciones del **perfil nuevo**
+- [ ] Estando dentro de una carpeta, borrarla desde la UI → el botón físico no ejecuta
+      acciones equivocadas
+- [ ] Feedback visual del botón físico distingue éxito / error / hueco vacío / navegación
+      (antes siempre se pintaba "success")
+
+### Dispositivos
+- [ ] Conectar a un puerto inexistente u ocupado → error en el panel, sin cuelgue
+- [ ] El botón "Conectar" no se queda en "Conectando..." indefinidamente
+- [ ] Desconectar y reconectar varias veces → cada pulsación se ejecuta **una** vez
+      (no duplicada)
+- [ ] Desenchufar el Arduino en caliente → la app avisa y sigue usable
+
+### Discord
+- [ ] Auto-connect al arrancar con token guardado
+- [ ] Toggle Mute responde notablemente más rápido (antes había 100 ms artificiales)
+- [ ] Mutearse desde Discord → el icono cambia al instante
+- [ ] Con Discord cerrado: pulsar el botón da "Discord no conectado" y la app no se congela
+      (el barrido de pipes tarda ~15 s como máximo, no 50 s)
+- [ ] Pulsar Conectar dos veces rápido → no se abren dos sesiones
+
+### Renderer aislado
+- [ ] En el build empaquetado, la UI se ve y funciona igual (la CSP no rompe estilos ni iconos)
+- [ ] Los iconos subidos por el usuario (data: URL) se siguen mostrando
+- [ ] El selector de dispositivo de audio del soundboard sigue listando salidas
+- [ ] Soundboard: **no** funciona con `npm run electron:dev` (limitación conocida, D2);
+      probarlo con el build empaquetado
+
+### Rendimiento de la UI
+- [ ] Arrastrar una acción sobre el grid va fluido con grid 6×6
+- [ ] Un audio en modo toggle sonando no hace parpadear el resto de botones
+
+---
+
 ## Cosas que NO deberían romperse (regresiones)
 
 - [ ] Drag & drop de acciones del sidebar al grid
-- [ ] Drag & drop para mover botones entre slots (no se puede, solo desde modo mover — verificar que no hay conflicto)
+- [ ] Drag & drop para mover botones entre slots
+- [ ] Todos los slots se marcan como destino mientras arrastras
 - [ ] Click derecho → context menu funciona
 - [ ] Configuración global (⚙️) se abre y guarda
 - [ ] Grid se ajusta al tamaño de ventana
@@ -110,3 +206,4 @@ Después de cada paso del refactor, testear los puntos marcados.
 - Si algo falla, anotar qué paso lo rompió para poder revertir parcialmente
 - Los plugins de main se testean uno a uno (primero hotkey que es el más simple)
 - Soundboard siempre se testea último (es el que se queda en renderer y puede tener edge cases)
+- El paso C se probó solo con compilación y build; **nada de su checklist está verificado en GUI**
