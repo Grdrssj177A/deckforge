@@ -1,0 +1,41 @@
+{
+  "name": "deckforge",
+  "version": "1.0.0",
+  "description": "Virtual stream deck with plugin system",
+  "main": "dist-electron/index.js",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc && vite build && tsc -p tsconfig.main.json",
+    "preview": "vite preview",
+    "electron:dev": "concurrently \"vite\" \"tsc -p tsconfig.main.json --watch\" \"electron .\"",
+    "electron:build": "npm run build && electron-builder",
+    "package": "npm run build && electron-builder --dir"
+  },
+  "dependencies": {
+    "@serialport/parser-readline": "^13.0.0",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "serialport": "^13.0.0"
+  },
+  "devDependencies": {
+    "@types/react": "^18.3.3",
+    "@types/react-dom": "^18.3.0",
+    "@vitejs/plugin-react": "^4.3.1",
+    "concurrently": "^8.2.2",
+    "electron": "^31.3.1",
+    "electron-builder": "^24.13.3",
+    "typescript": "^5.5.4",
+    "vite": "^5.4.0"
+  },
+  "build": {
+    "appId": "com.deckforge.app",
+    "productName": "DeckForge",
+    "files": [
+      "dist/**/*",
+      "dist-electron/**/*"
+    ],
+    "directories": {
+      "output": "release"
+    }
+  }
+}
