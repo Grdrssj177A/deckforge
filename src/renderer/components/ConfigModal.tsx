@@ -17,7 +17,17 @@ interface ConfigField {
   max?: number;
   options?: { value: string; label: string }[];
   description?: string;
+  /**
+   * Qué se está eligiendo en un campo 'file'. Sin esto, todos los selectores
+   * usaban el diálogo de audio, así que "Open App" no podía ver ejecutables.
+   */
+  fileKind?: 'audio' | 'app';
 }
+
+const APP_FILE_FILTERS = [
+  { name: 'Aplicaciones', extensions: ['exe', 'com', 'bat', 'cmd', 'lnk'] },
+  { name: 'Todos los archivos', extensions: ['*'] },
+];
 
 function getConfigFields(action: Action): ConfigField[] {
   const { pluginId, config } = action;
@@ -26,7 +36,7 @@ function getConfigFields(action: Action): ConfigField[] {
     case 'soundboard':
       if (config.command === 'stopAll') return [];
       return [
-        { key: 'filePath', label: 'Archivo de audio', type: 'file', description: 'MP3, WAV, OGG, FLAC' },
+        { key: 'filePath', label: 'Archivo de audio', type: 'file', fileKind: 'audio', description: 'MP3, WAV, OGG, FLAC' },
         { key: 'volume', label: 'Volumen', type: 'number', min: 0, max: 100, description: '0-100%' },
         { key: 'mode', label: 'Al pulsar de nuevo', type: 'select', options: [
           { value: 'overlap', label: 'Solapar (varias a la vez)' },
@@ -57,7 +67,7 @@ function getConfigFields(action: Action): ConfigField[] {
     case 'system':
       switch (config.command) {
         case 'openUrl': return [{ key: 'url', label: 'URL', type: 'text', placeholder: 'https://...' }];
-        case 'openApp': return [{ key: 'path', label: 'Aplicación', type: 'file' }];
+        case 'openApp': return [{ key: 'path', label: 'Aplicación', type: 'file', fileKind: 'app' }];
         case 'folder': return [{ key: 'folderName', label: 'Nombre de carpeta', type: 'text', placeholder: 'Mi carpeta' }];
         case 'screenshot': return [
           { key: 'savePath', label: 'Carpeta destino', type: 'folder', description: 'Vacío = Escritorio' },
@@ -144,14 +154,18 @@ export function ConfigModal({ action, onSave, onCancel }: ConfigModalProps) {
     setRecordingHotkey(null);
   };
 
-  const handleFileSelect = async (fieldKey: string) => {
-    if (window.deckforge) {
-      const result = await window.deckforge.sound.selectFile();
-      if (result) setConfig((prev) => ({ ...prev, [fieldKey]: result }));
-    } else {
+  const handleFileSelect = async (fieldKey: string, kind: ConfigField['fileKind']) => {
+    if (!window.deckforge) {
       const p = prompt('Ruta:');
       if (p) setConfig((prev) => ({ ...prev, [fieldKey]: p }));
+      return;
     }
+    // Elegir la ruta en el diálogo nativo también la marca como autorizada en
+    // el main, así que "Open App" no pedirá confirmación después.
+    const result = kind === 'app'
+      ? await window.deckforge.system.selectFile(APP_FILE_FILTERS)
+      : await window.deckforge.sound.selectFile();
+    if (result) setConfig((prev) => ({ ...prev, [fieldKey]: result }));
   };
 
   const handleFolderSelect = async (fieldKey: string) => {
@@ -240,7 +254,7 @@ export function ConfigModal({ action, onSave, onCancel }: ConfigModalProps) {
                   {field.type === 'color' && <input type="color" className="modal-input modal-input-color" value={(config[field.key] as string) || '#ff6600'} onChange={(e) => handleChange(field.key, e.target.value)} />}
                   {field.type === 'select' && <select className="modal-input" value={(config[field.key] as string) || field.options?.[0]?.value || ''} onChange={(e) => handleChange(field.key, e.target.value)}>{field.options?.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}</select>}
                   {field.type === 'toggle' && <label className="modal-toggle"><input type="checkbox" checked={!!config[field.key]} onChange={(e) => handleChange(field.key, e.target.checked)} /><span className="modal-toggle-slider"></span><span className="modal-toggle-label">{config[field.key] ? 'Sí' : 'No'}</span></label>}
-                  {field.type === 'file' && <div className="modal-file-field"><input type="text" className="modal-input" value={(config[field.key] as string) || ''} readOnly placeholder="Seleccionar..." /><button type="button" className="modal-btn-browse" onClick={() => handleFileSelect(field.key)}>Explorar</button></div>}
+                  {field.type === 'file' && <div className="modal-file-field"><input type="text" className="modal-input" value={(config[field.key] as string) || ''} readOnly placeholder="Seleccionar..." /><button type="button" className="modal-btn-browse" onClick={() => handleFileSelect(field.key, field.fileKind)}>Explorar</button></div>}
                   {field.type === 'folder' && <div className="modal-file-field"><input type="text" className="modal-input" value={(config[field.key] as string) || ''} readOnly placeholder="Seleccionar..." /><button type="button" className="modal-btn-browse" onClick={() => handleFolderSelect(field.key)}>Explorar</button></div>}
                   {field.type === 'hotkey' && <div className="modal-hotkey-field"><input type="text" className={`modal-input ${recordingHotkey === field.key ? 'recording' : ''}`} value={recordingHotkey === field.key ? '⏺ Pulsa teclas...' : (config[field.key] as string) || ''} onKeyDown={(e) => handleHotkeyKeyDown(e, field.key)} readOnly placeholder={field.placeholder} /><button type="button" className="modal-btn-record" onClick={() => setRecordingHotkey(recordingHotkey === field.key ? null : field.key)}>{recordingHotkey === field.key ? '⏹' : '⏺'}</button></div>}
                   {field.type === 'audioDevice' && <AudioDeviceSelect value={(config[field.key] as string) || ''} onChange={(v) => handleChange(field.key, v)} />}

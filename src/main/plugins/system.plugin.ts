@@ -1,14 +1,27 @@
-import { app, shell, desktopCapturer, screen } from 'electron';
+import { app, shell, desktopCapturer, screen, BrowserWindow } from 'electron';
 import { join } from 'path';
-import { exec } from 'child_process';
+import { execFile } from 'child_process';
 import { promisify } from 'util';
 import { writeFile, mkdir } from 'fs/promises';
-import { existsSync } from 'fs';
+import { existsSync, statSync } from 'fs';
 import { DeckPlugin, ActionDefinition, ActionConfig, ActionContext } from '../core/types';
+import { trustStore } from '../core/TrustStore';
 import { createLogger } from '../lib/logger';
+import { loadRobot } from '../lib/robot';
+import {
+  ValidationError,
+  validateAbsolutePath,
+  validateEnum,
+  validateExternalUrl,
+  validateInt,
+} from '../lib/validate';
 
-const execAsync = promisify(exec);
+const execFileAsync = promisify(execFile);
 const log = createLogger('SystemPlugin');
+
+/** Formatos que realmente sabemos serializar (toPNG / toJPEG). */
+const SCREENSHOT_FORMATS = ['png', 'jpg'] as const;
+const CAPTURE_MODES = ['fullscreen', 'window'] as const;
 
 export class SystemPlugin implements DeckPlugin {
   readonly id = 'system';
@@ -30,39 +43,36 @@ export class SystemPlugin implements DeckPlugin {
   async initialize(): Promise<void> {}
   async dispose(): Promise<void> {}
 
-  async execute(actionId: string, config: ActionConfig, context: ActionContext): Promise<void> {
-    const command = config.command as string || actionId;
+  async execute(actionId: string, config: ActionConfig, _context: ActionContext): Promise<void> {
+    const command = (config.command as string) || actionId;
 
     switch (command) {
       case 'openUrl': {
-        const url = config.url as string;
-        if (!url) throw new Error('URL no configurada');
+        // Solo http/https: bloquea file: y esquemas custom, que shell.openExternal
+        // ejecutaría como programa.
+        const url = validateExternalUrl(config.url);
         await shell.openExternal(url);
         break;
       }
       case 'openApp': {
-        const appPath = config.path as string;
-        if (!appPath) throw new Error('Ruta no configurada');
-        const err = await shell.openPath(appPath);
-        if (err) throw new Error(err);
+        await this.openApp(config);
         break;
       }
       case 'volumeUp': {
-        const step = Math.max(1, Math.ceil((config.step as number || 10) / 2));
-        await execAsync(`powershell -NoProfile -Command "$wshell = New-Object -ComObject WScript.Shell; 1..${step} | ForEach-Object { $wshell.SendKeys([char]175) }"`);
+        this.tapVolumeKey('audio_vol_up', config);
         break;
       }
       case 'volumeDown': {
-        const step = Math.max(1, Math.ceil((config.step as number || 10) / 2));
-        await execAsync(`powershell -NoProfile -Command "$wshell = New-Object -ComObject WScript.Shell; 1..${step} | ForEach-Object { $wshell.SendKeys([char]174) }"`);
+        this.tapVolumeKey('audio_vol_down', config);
         break;
       }
       case 'volumeMute': {
-        await execAsync(`powershell -NoProfile -Command "$wshell = New-Object -ComObject WScript.Shell; $wshell.SendKeys([char]173)"`);
+        loadRobot().keyTap('audio_mute');
         break;
       }
       case 'lockScreen': {
-        await execAsync('rundll32.exe user32.dll,LockWorkStation');
+        // Argumentos como array: nunca se construye una línea de comandos.
+        await execFileAsync('rundll32.exe', ['user32.dll,LockWorkStation']);
         break;
       }
       case 'screenshot': {
@@ -74,31 +84,85 @@ export class SystemPlugin implements DeckPlugin {
         break;
       }
       default:
-        throw new Error(`Comando desconocido: ${command}`);
+        throw new ValidationError(`Comando desconocido: ${String(command).slice(0, 40)}`);
     }
   }
 
+  /**
+   * Abre una aplicación. La ruta puede venir de un perfil importado, así que se
+   * exige autorización explícita del usuario la primera vez (TrustStore).
+   */
+  private async openApp(config: ActionConfig): Promise<void> {
+    const appPath = validateAbsolutePath(config.path, 'Ruta de la aplicación');
+
+    if (!existsSync(appPath)) {
+      throw new ValidationError(`La ruta no existe: ${appPath}`);
+    }
+    if (statSync(appPath).isDirectory()) {
+      throw new ValidationError('La ruta apunta a una carpeta, no a una aplicación');
+    }
+
+    const parent = BrowserWindow.getFocusedWindow() ?? BrowserWindow.getAllWindows()[0] ?? null;
+    const allowed = await trustStore.ensureTrusted(appPath, parent);
+    if (!allowed) {
+      throw new ValidationError('Ejecución cancelada por el usuario');
+    }
+
+    const err = await shell.openPath(appPath);
+    if (err) throw new Error(err);
+  }
+
+  /**
+   * Volumen via robotjs (teclas multimedia). Sustituye al PowerShell anterior,
+   * que interpolaba `step` en una línea de comandos.
+   */
+  private tapVolumeKey(key: string, config: ActionConfig): void {
+    const step = validateInt(config.step, 1, 50, 10, 'Paso de volumen');
+    // Cada pulsación mueve ~2% en Windows.
+    const taps = Math.max(1, Math.ceil(step / 2));
+    const robot = loadRobot();
+    for (let i = 0; i < taps; i++) robot.keyTap(key);
+  }
+
   private async takeScreenshot(config: ActionConfig): Promise<void> {
-    const format = (config.format as string) || 'png';
-    const captureMode = (config.captureMode as string) || 'fullscreen';
-    let destFolder = (config.savePath as string) || join(app.getPath('desktop'), 'DeckForge Screenshots');
+    const format = validateEnum(config.format, SCREENSHOT_FORMATS, 'png', 'Formato');
+    const captureMode = validateEnum(config.captureMode, CAPTURE_MODES, 'fullscreen', 'Modo de captura');
+
+    const destFolder = config.savePath
+      ? validateAbsolutePath(config.savePath, 'Carpeta destino')
+      : join(app.getPath('desktop'), 'DeckForge Screenshots');
+
+    if (captureMode === 'window') {
+      // El modo "ventana" nunca capturó una ventana: el script anterior copiaba
+      // la pantalla primaria completa. Se mantiene ese comportamiento hasta que
+      // exista una forma fiable de identificar la ventana en primer plano.
+      log.warn('captureMode "window" no está implementado; se captura la pantalla completa');
+    }
 
     if (!existsSync(destFolder)) await mkdir(destFolder, { recursive: true });
 
     const timestamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
     const filePath = join(destFolder, `screenshot-${timestamp}.${format}`);
 
-    if (captureMode === 'window') {
-      const script = `Add-Type -AssemblyName System.Windows.Forms; Add-Type -AssemblyName System.Drawing; $s = [System.Windows.Forms.Screen]::PrimaryScreen; $b = New-Object System.Drawing.Bitmap($s.Bounds.Width, $s.Bounds.Height); $g = [System.Drawing.Graphics]::FromImage($b); $g.CopyFromScreen($s.Bounds.Location, [System.Drawing.Point]::Empty, $s.Bounds.Size); $b.Save('${filePath.replace(/\\/g, '\\\\')}'); $g.Dispose(); $b.Dispose()`;
-      await execAsync(`powershell -NoProfile -Command "${script}"`);
-    } else {
-      const sources = await desktopCapturer.getSources({ types: ['screen'], thumbnailSize: screen.getPrimaryDisplay().workAreaSize });
-      if (sources.length > 0) {
-        const thumb = sources[0].thumbnail;
-        const buffer = format === 'jpg' ? thumb.toJPEG(90) : format === 'bmp' ? thumb.toBitmap() : thumb.toPNG();
-        await writeFile(filePath, buffer);
-      }
+    const display = screen.getPrimaryDisplay();
+    const scale = display.scaleFactor || 1;
+    const sources = await desktopCapturer.getSources({
+      types: ['screen'],
+      thumbnailSize: {
+        width: Math.round(display.size.width * scale),
+        height: Math.round(display.size.height * scale),
+      },
+    });
+
+    if (sources.length === 0) {
+      throw new Error('No se pudo capturar la pantalla (sin fuentes disponibles)');
     }
+
+    const thumb = sources[0].thumbnail;
+    const buffer = format === 'jpg' ? thumb.toJPEG(90) : thumb.toPNG();
+    await writeFile(filePath, buffer);
+
+    log.info(`Screenshot saved: ${filePath}`);
     shell.showItemInFolder(filePath);
   }
 }

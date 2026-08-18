@@ -82,6 +82,22 @@ export class DeviceManager {
   }
 
   /**
+   * Desconecta todos los dispositivos físicos. Se llama al cerrar la app para
+   * que los puertos serie se liberen de forma ordenada y no dependan del
+   * teardown del proceso.
+   */
+  async disconnectAll(): Promise<void> {
+    const ids = Array.from(this.devices.keys()).filter((id) => id !== 'virtual');
+    for (const id of ids) {
+      try {
+        await this.disconnect(id);
+      } catch (e) {
+        log.error(`Error disconnecting "${id}" during shutdown:`, e);
+      }
+    }
+  }
+
+  /**
    * Obtiene info de un dispositivo.
    */
   getDevice(deviceId: string): DeckDevice | undefined {

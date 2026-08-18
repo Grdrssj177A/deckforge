@@ -2,12 +2,12 @@
   "name": "deckforge",
   "version": "1.0.0",
   "description": "Virtual stream deck with plugin system",
-  "main": "dist-electron/index.js",
+  "main": "dist-electron/main/index.js",
   "scripts": {
     "dev": "vite",
     "build": "tsc && vite build && tsc -p tsconfig.main.json",
     "preview": "vite preview",
-    "electron:dev": "concurrently \"vite\" \"tsc -p tsconfig.main.json --watch\" \"electron .\"",
+    "electron:dev": "concurrently \"vite\" \"tsc -p tsconfig.main.json --watch\" \"set VITE_DEV_SERVER_URL=http://localhost:5173&& electron .\"",
     "electron:build": "npm run build && electron-builder",
     "package": "npm run build && electron-builder --dir"
   },

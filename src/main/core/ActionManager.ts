@@ -8,16 +8,35 @@ const log = createLogger('ActionManager');
 const COOLDOWN_MS = 200;
 
 /**
+ * Se lanza cuando una acción se rechaza por anti-spam.
+ * Antes esto era `new Error('cooldown')` y se comparaba el mensaje por igualdad
+ * en cuatro sitios distintos; cualquier cambio de texto lo habría roto en silencio.
+ */
+export class CooldownError extends Error {
+  constructor() {
+    super('cooldown');
+    this.name = 'CooldownError';
+  }
+}
+
+export function isCooldownError(error: unknown): boolean {
+  return error instanceof CooldownError;
+}
+
+/**
  * ActionManager: centraliza la ejecución de acciones.
  * - Recibe un ActionContext completo
- * - Aplica anti-spam per-button (con deviceId)
+ * - Aplica anti-spam per-button (device + perfil + página + botón)
  * - Delega al PluginManager
  * - Emite eventos de resultado
  */
 export class ActionManager {
   private pluginManager: PluginManager;
   private bus: EventBus;
-  private busyUntil = new Map<string, number>();
+  /** Claves en ejecución ahora mismo. */
+  private inFlight = new Set<string>();
+  /** Fin del enfriamiento por clave. */
+  private cooldownUntil = new Map<string, number>();
 
   constructor(pluginManager: PluginManager, bus: EventBus) {
     this.pluginManager = pluginManager;
@@ -25,18 +44,27 @@ export class ActionManager {
   }
 
   /**
-   * Genera la clave de cooldown incluyendo deviceId para que
-   * dos dispositivos con la misma posición no compartan cooldown.
+   * Clave de cooldown. Incluye deviceId, perfil, página y botón: dos botones
+   * distintos nunca deben compartir enfriamiento.
    */
   private getBusyKey(context: ActionContext): string {
-    return `${context.deviceId || 'virtual'}:${context.profileId}:${context.pageId}:${context.buttonId}`;
+    const device = context.deviceId || 'virtual';
+    const profile = context.profileId || 'unknown';
+    const page = context.pageId || 'root';
+    const button = Number.isInteger(context.buttonId) ? context.buttonId : -1;
+    return `${device}:${profile}:${page}:${button}`;
   }
 
   isActionBusy(context: ActionContext): boolean {
     const key = this.getBusyKey(context);
-    const until = this.busyUntil.get(key);
-    if (!until) return false;
-    if (Date.now() >= until) { this.busyUntil.delete(key); return false; }
+    if (this.inFlight.has(key)) return true;
+
+    const until = this.cooldownUntil.get(key);
+    if (until === undefined) return false;
+    if (Date.now() >= until) {
+      this.cooldownUntil.delete(key);
+      return false;
+    }
     return true;
   }
 
@@ -44,20 +72,24 @@ export class ActionManager {
     const key = this.getBusyKey(context);
 
     if (this.isActionBusy(context)) {
-      throw new Error('cooldown');
+      throw new CooldownError();
     }
 
-    // Mark busy during execution
-    this.busyUntil.set(key, Date.now() + 60000);
+    // En vuelo mientras dura la ejecución, sin depender de un timeout arbitrario.
+    this.inFlight.add(key);
+    this.bus.emit('action:started', { pluginId, actionId, context });
 
     try {
       await this.pluginManager.execute(pluginId, actionId, config, context);
+      this.bus.emit('action:completed', { pluginId, actionId, context });
     } catch (error) {
-      log.error(`Action failed [${pluginId}/${actionId}]: ${error instanceof Error ? error.message : error}`);
+      const msg = error instanceof Error ? error.message : String(error);
+      log.error(`Action failed [${pluginId}/${actionId}]: ${msg}`);
+      this.bus.emit('action:failed', { pluginId, actionId, context, error: msg });
       throw error;
     } finally {
-      // Set cooldown after execution
-      this.busyUntil.set(key, Date.now() + COOLDOWN_MS);
+      this.inFlight.delete(key);
+      this.cooldownUntil.set(key, Date.now() + COOLDOWN_MS);
     }
   }
 }

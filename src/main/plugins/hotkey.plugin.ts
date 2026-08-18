@@ -1,5 +1,7 @@
 import { DeckPlugin, ActionDefinition, ActionConfig, ActionContext } from '../core/types';
 import { createLogger } from '../lib/logger';
+import { loadRobot, preloadRobot } from '../lib/robot';
+import { ValidationError, validateInt } from '../lib/validate';
 
 const log = createLogger('HotkeyPlugin');
 
@@ -19,7 +21,8 @@ export class HotkeyPlugin implements DeckPlugin {
   ];
 
   async initialize(): Promise<void> {
-    // No requiere inicialización
+    // Paga el require del módulo nativo en el arranque, no en la primera pulsación.
+    preloadRobot();
   }
 
   async dispose(): Promise<void> {
@@ -27,19 +30,18 @@ export class HotkeyPlugin implements DeckPlugin {
   }
 
   async execute(actionId: string, config: ActionConfig, context: ActionContext): Promise<void> {
-    const keys = config.keys as string;
-    const delay = (config.delay as number) || 0;
+    const keys = typeof config.keys === 'string' ? config.keys.trim() : '';
+    const delay = validateInt(config.delay, 0, 5000, 0, 'Retardo');
 
-    if (!keys) throw new Error('No hay atajo configurado');
+    if (!keys) throw new ValidationError('No hay atajo configurado');
+    if (keys.length > 128) throw new ValidationError('Atajo demasiado largo');
 
     if (delay > 0) await new Promise((r) => setTimeout(r, delay));
 
-    const robot = require('@hurdlegroup/robotjs');
     const { modifiers, key } = this.parseCombo(keys);
+    if (!key) throw new ValidationError(`No se pudo parsear: ${keys}`);
 
-    if (!key) throw new Error(`No se pudo parsear: ${keys}`);
-
-    robot.keyTap(key, modifiers);
+    loadRobot().keyTap(key, modifiers);
   }
 
   private parseCombo(combo: string): { modifiers: string[]; key: string | null } {

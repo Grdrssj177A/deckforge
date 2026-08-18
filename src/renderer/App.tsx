@@ -57,17 +57,19 @@ function AppContent() {
 }
 
 export function App() {
+  // NotificationProvider va primero: ProfileProvider lo usa para informar de
+  // fallos de persistencia que antes se perdían en silencio.
   return (
-    <ProfileProvider>
-      <PluginProvider>
-        <SettingsProvider>
-          <NotificationProvider>
+    <NotificationProvider>
+      <ProfileProvider>
+        <PluginProvider>
+          <SettingsProvider>
             <DragProvider>
               <AppContent />
             </DragProvider>
-          </NotificationProvider>
-        </SettingsProvider>
-      </PluginProvider>
-    </ProfileProvider>
+          </SettingsProvider>
+        </PluginProvider>
+      </ProfileProvider>
+    </NotificationProvider>
   );
 }
